@@ -464,6 +464,140 @@ impl Page {
         }
     }
 
+    /// Wait for text to appear anywhere on the page.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on timeout.
+    pub async fn wait_for_text(&self, text: &str, timeout: Duration) -> Result<()> {
+        let escaped = text.replace('\\', "\\\\").replace('\'', "\\'");
+        let expr = format!(
+            "document.body && document.body.innerText && document.body.innerText.includes('{escaped}')"
+        );
+        self.wait_for_function(&expr, timeout).await
+    }
+
+    /// Wait for the URL to contain a pattern (substring match).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on timeout.
+    pub async fn wait_for_url(&self, pattern: &str, timeout: Duration) -> Result<()> {
+        let escaped = pattern.replace('\\', "\\\\").replace('\'', "\\'");
+        let expr = format!("window.location.href.includes('{escaped}')");
+        self.wait_for_function(&expr, timeout).await
+    }
+
+    /// Wait for a `JavaScript` expression to return truthy.
+    ///
+    /// Polls at 100ms intervals until the expression evaluates to `true`
+    /// or the timeout is reached.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on timeout.
+    pub async fn wait_for_function(&self, expression: &str, timeout: Duration) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let wrapped = format!("!!({expression})");
+        loop {
+            let result: bool = self
+                .inner
+                .evaluate(wrapped.clone())
+                .await
+                .map_err(Error::Cdp)?
+                .into_value()
+                .unwrap_or(false);
+
+            if result {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(Error::Timeout(format!(
+                    "condition not met within {timeout:?}: {expression}"
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Wait for network to become idle (no in-flight requests for 500ms).
+    ///
+    /// Uses `JavaScript` `PerformanceObserver` to track resource loading.
+    /// This is more reliable than a fixed sleep but not as robust as
+    /// Playwright's native `networkidle` (which tracks CDP Network events).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on timeout.
+    pub async fn wait_for_network_idle(&self, timeout: Duration) -> Result<()> {
+        // Inject a network idle detector via JS
+        let inject_js = r"
+            (() => {
+                if (window.__brother_net_idle !== undefined) return;
+                window.__brother_net_idle = false;
+                window.__brother_pending = 0;
+                const orig_fetch = window.fetch;
+                window.fetch = function(...args) {
+                    window.__brother_pending++;
+                    window.__brother_net_idle = false;
+                    return orig_fetch.apply(this, args).finally(() => {
+                        window.__brother_pending--;
+                    });
+                };
+                const orig_open = XMLHttpRequest.prototype.open;
+                const orig_send = XMLHttpRequest.prototype.send;
+                XMLHttpRequest.prototype.open = function(...args) {
+                    this.__brother_tracked = true;
+                    return orig_open.apply(this, args);
+                };
+                XMLHttpRequest.prototype.send = function(...args) {
+                    if (this.__brother_tracked) {
+                        window.__brother_pending++;
+                        window.__brother_net_idle = false;
+                        this.addEventListener('loadend', () => {
+                            window.__brother_pending--;
+                        }, {once: true});
+                    }
+                    return orig_send.apply(this, args);
+                };
+            })()
+        ";
+
+        let _ = self.inner.evaluate(inject_js.to_owned()).await;
+
+        // Poll until no pending requests for 500ms
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut quiet_since: Option<tokio::time::Instant> = None;
+        let idle_threshold = Duration::from_millis(500);
+
+        loop {
+            let pending: i64 = self
+                .inner
+                .evaluate("window.__brother_pending || 0".to_owned())
+                .await
+                .map_err(Error::Cdp)?
+                .into_value()
+                .unwrap_or(0);
+
+            if pending == 0 {
+                let now = tokio::time::Instant::now();
+                let quiet_start = quiet_since.get_or_insert(now);
+                if now.duration_since(*quiet_start) >= idle_threshold {
+                    return Ok(());
+                }
+            } else {
+                quiet_since = None;
+            }
+
+            if tokio::time::Instant::now() >= deadline {
+                return Err(Error::Timeout(format!(
+                    "network not idle within {timeout:?} ({pending} requests pending)"
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     /// Wait for a fixed duration.
     pub async fn wait(&self, duration: Duration) {
         tokio::time::sleep(duration).await;

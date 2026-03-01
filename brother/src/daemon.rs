@@ -482,65 +482,40 @@ async fn cmd_wait(state: &Arc<Mutex<DaemonState>>, condition: WaitCondition) -> 
         Err(resp) => return resp,
     };
 
-    match condition {
+    let result = match condition {
         WaitCondition::Selector {
             selector,
             timeout_ms,
-        } => {
-            match page
-                .wait_for_selector(&selector, Duration::from_millis(timeout_ms))
-                .await
-            {
-                Ok(()) => Response::ok(),
-                Err(e) => Response::error(format!("{e}")),
-            }
-        }
+        } => page.wait_for_selector(&selector, Duration::from_millis(timeout_ms)).await,
         WaitCondition::Text {
             text,
             timeout_ms,
-        } => {
-            let expr = format!(
-                "document.body.innerText && document.body.innerText.includes('{}')",
-                text.replace('\'', "\\'")
-            );
-            match poll_js_condition(&page, &expr, Duration::from_millis(timeout_ms)).await {
-                Ok(()) => Response::ok(),
-                Err(e) => Response::error(format!("{e}")),
-            }
-        }
+        } => page.wait_for_text(&text, Duration::from_millis(timeout_ms)).await,
         WaitCondition::Url {
             pattern,
             timeout_ms,
-        } => {
-            let expr = format!(
-                "window.location.href.includes('{}')",
-                pattern.replace('\'', "\\'")
-            );
-            match poll_js_condition(&page, &expr, Duration::from_millis(timeout_ms)).await {
-                Ok(()) => Response::ok(),
-                Err(e) => Response::error(format!("{e}")),
-            }
-        }
+        } => page.wait_for_url(&pattern, Duration::from_millis(timeout_ms)).await,
         WaitCondition::Function {
             expression,
             timeout_ms,
-        } => {
-            match poll_js_condition(&page, &expression, Duration::from_millis(timeout_ms)).await {
-                Ok(()) => Response::ok(),
-                Err(e) => Response::error(format!("{e}")),
-            }
-        }
-        WaitCondition::LoadState { state: _, timeout_ms: _ } => {
-            // Best-effort: wait for navigation
-            match page.wait_for_navigation().await {
-                Ok(()) => Response::ok(),
-                Err(e) => Response::error(format!("{e}")),
+        } => page.wait_for_function(&expression, Duration::from_millis(timeout_ms)).await,
+        WaitCondition::LoadState { state, timeout_ms } => {
+            match state {
+                WaitStrategy::NetworkIdle => {
+                    page.wait_for_network_idle(Duration::from_millis(timeout_ms)).await
+                }
+                _ => page.wait_for_navigation().await,
             }
         }
         WaitCondition::Duration { ms } => {
             page.wait(Duration::from_millis(ms)).await;
-            Response::ok()
+            Ok(())
         }
+    };
+
+    match result {
+        Ok(()) => Response::ok(),
+        Err(e) => Response::error(format!("{e}")),
     }
 }
 
@@ -591,26 +566,6 @@ fn is_ref(target: &str) -> bool {
         || (target.starts_with('e') && target[1..].chars().all(|c| c.is_ascii_digit()))
 }
 
-/// Poll a JS expression until it returns truthy or timeout.
-async fn poll_js_condition(page: &Page, expression: &str, timeout: Duration) -> crate::Result<()> {
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        let result: bool = page
-            .eval_as::<bool>(&format!("!!({expression})"))
-            .await
-            .unwrap_or(false);
-
-        if result {
-            return Ok(());
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return Err(Error::Timeout(format!(
-                "condition not met within {timeout:?}: {expression}"
-            )));
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
 
 /// Simple base64 encoding without extra crate.
 fn base64_encode(data: &[u8]) -> String {
