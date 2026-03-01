@@ -34,6 +34,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # CLI
 clap = { version = "4", features = ["derive"] }
 
+# Encoding
+base64 = "0.22"
+
 # Utilities
 url = "2"
 dirs = "6"

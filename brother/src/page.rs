@@ -1,11 +1,18 @@
 //! High-level page abstraction for browser interaction.
+//!
+//! All interaction methods accept a **target** string that is either:
+//! - A ref from a prior snapshot: `"@e1"`, `"e1"`, or `"ref=e1"`
+//! - A CSS selector: `"#submit"`, `".btn-primary"`
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use chromiumoxide::cdp::browser_protocol::accessibility::GetFullAxTreeParams;
 use chromiumoxide::cdp::browser_protocol::dom::{BackendNodeId, FocusParams, ResolveNodeParams};
-use chromiumoxide::cdp::browser_protocol::input::{DispatchKeyEventParams, DispatchKeyEventType};
+use chromiumoxide::cdp::browser_protocol::input::{
+    DispatchKeyEventParams, DispatchKeyEventType, DispatchMouseEventParams, DispatchMouseEventType,
+    MouseButton,
+};
 use chromiumoxide::cdp::browser_protocol::page::{
     CaptureScreenshotFormat, GetNavigationHistoryParams, NavigateToHistoryEntryParams,
 };
@@ -15,12 +22,14 @@ use chromiumoxide::page::ScreenshotParams;
 use tokio::sync::Mutex;
 
 use crate::error::{Error, Result};
+use crate::protocol::ScrollDirection;
 use crate::snapshot::{self, Ref, RefMap, Snapshot, SnapshotOptions};
 
 /// A browser page with ref-based interaction support.
 ///
 /// Wraps a `chromiumoxide::Page` and adds accessibility snapshot / ref
-/// tracking on top.
+/// tracking on top. All interaction methods accept a unified **target**
+/// string — either a ref (`@e1`) or a CSS selector (`#id`).
 #[derive(Debug, Clone)]
 pub struct Page {
     inner: chromiumoxide::Page,
@@ -109,9 +118,6 @@ impl Page {
 
     /// Capture an accessibility snapshot with default options.
     ///
-    /// This is the primary method for AI agents to observe page state.
-    /// Returns a [`Snapshot`] containing the formatted tree and ref map.
-    ///
     /// # Errors
     ///
     /// Returns an error if the CDP accessibility call fails.
@@ -144,130 +150,176 @@ impl Page {
     }
 
     // -----------------------------------------------------------------------
-    // Ref-based interaction
+    // Interaction (unified target: ref or CSS selector)
     // -----------------------------------------------------------------------
 
-    /// Click an element by ref (e.g. `"e1"` or `"@e1"`).
-    ///
-    /// The ref must come from a prior [`snapshot`](Self::snapshot) call.
+    /// Click an element by ref or CSS selector.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::ElementNotFound`] if the ref is unknown.
-    pub async fn click_ref(&self, ref_id: &str) -> Result<()> {
-        let r = self.resolve_ref(ref_id).await?;
-        let oid = self.resolve_ref_to_object(&r).await?;
-        let center = self.get_center_from_object(oid).await?;
+    /// Returns an error if the element is not found.
+    pub async fn click(&self, target: &str) -> Result<()> {
+        let center = self.resolve_target_center(target).await?;
         self.inner.click(center).await.map_err(Error::Cdp)?;
         Ok(())
     }
 
-    /// Fill (clear + type) an element by ref.
+    /// Double-click an element.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::ElementNotFound`] if the ref is unknown.
-    pub async fn fill_ref(&self, ref_id: &str, text: &str) -> Result<()> {
-        let r = self.resolve_ref(ref_id).await?;
-        self.focus_ref_element(&r).await?;
-        // Select all existing content and delete
+    /// Returns an error if the element is not found.
+    pub async fn dblclick(&self, target: &str) -> Result<()> {
+        let center = self.resolve_target_center(target).await?;
+        // Two rapid clicks via CDP Input domain
+        for _ in 0..2 {
+            self.dispatch_mouse(DispatchMouseEventType::MousePressed, center, 1)
+                .await?;
+            self.dispatch_mouse(DispatchMouseEventType::MouseReleased, center, 1)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Clear and fill an input by ref or CSS selector.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the element is not found.
+    pub async fn fill(&self, target: &str, value: &str) -> Result<()> {
+        self.focus(target).await?;
         self.key_press("Control+a").await?;
         self.key_press("Delete").await?;
+        self.type_text(value).await
+    }
+
+    /// Focus an element, then type text (appends, does not clear).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the element is not found.
+    pub async fn type_into(&self, target: &str, text: &str) -> Result<()> {
+        self.focus(target).await?;
         self.type_text(text).await
     }
 
-    /// Type text into a focused element by ref (appends, does not clear).
+    /// Focus an element by ref or CSS selector.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::ElementNotFound`] if the ref is unknown.
-    pub async fn type_ref(&self, ref_id: &str, text: &str) -> Result<()> {
-        let r = self.resolve_ref(ref_id).await?;
-        self.focus_ref_element(&r).await?;
-        self.type_text(text).await
+    /// Returns an error if the element is not found.
+    pub async fn focus(&self, target: &str) -> Result<()> {
+        if let Some(r) = self.try_resolve_ref(target).await {
+            return self.focus_ref_element(&r).await;
+        }
+        // CSS selector fallback: click to focus
+        let el = self.find_element(target).await?;
+        el.click().await.map_err(Error::Cdp)?;
+        Ok(())
     }
 
-    /// Focus an element by ref.
+    /// Hover an element by ref or CSS selector.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::ElementNotFound`] if the ref is unknown.
-    pub async fn focus_ref(&self, ref_id: &str) -> Result<()> {
-        let r = self.resolve_ref(ref_id).await?;
-        self.focus_ref_element(&r).await
-    }
-
-    /// Hover an element by ref.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::ElementNotFound`] if the ref is unknown.
-    pub async fn hover_ref(&self, ref_id: &str) -> Result<()> {
-        let r = self.resolve_ref(ref_id).await?;
-        let oid = self.resolve_ref_to_object(&r).await?;
-        let center = self.get_center_from_object(oid).await?;
+    /// Returns an error if the element is not found.
+    pub async fn hover(&self, target: &str) -> Result<()> {
+        let center = self.resolve_target_center(target).await?;
         self.inner.move_mouse(center).await.map_err(Error::Cdp)?;
         Ok(())
     }
 
-    /// Get the text content of an element by ref.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::ElementNotFound`] if the ref is unknown.
-    pub async fn text_ref(&self, ref_id: &str) -> Result<String> {
-        let r = self.resolve_ref(ref_id).await?;
-        let object_id = self.resolve_ref_to_object(&r).await?;
-
-        let result = self
-            .inner
-            .evaluate_function(
-                CallFunctionOnParams::builder()
-                    .object_id(object_id)
-                    .function_declaration(
-                        "function() { return this.innerText || this.textContent || ''; }",
-                    )
-                    .build()
-                    .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?,
-            )
-            .await
-            .map_err(Error::Cdp)?;
-
-        let text: String = result.into_value().unwrap_or_default();
-        Ok(text)
-    }
-
-    // -----------------------------------------------------------------------
-    // CSS selector interaction (fallback)
-    // -----------------------------------------------------------------------
-
-    /// Click an element by CSS selector.
+    /// Select a dropdown option by value.
     ///
     /// # Errors
     ///
     /// Returns an error if the element is not found.
-    pub async fn click_selector(&self, selector: &str) -> Result<()> {
-        let el = self.find_element(selector).await?;
-        el.click().await.map_err(Error::Cdp)?;
+    pub async fn select_option(&self, target: &str, value: &str) -> Result<()> {
+        let escaped_val = value.replace('\\', "\\\\").replace('\'', "\\'");
+        self.call_on_target(
+            target,
+            &format!(
+                "function() {{ this.value = '{escaped_val}'; \
+                 this.dispatchEvent(new Event('change', {{bubbles: true}})); }}"
+            ),
+        )
+        .await?;
         Ok(())
     }
 
-    /// Fill an element by CSS selector.
+    /// Check a checkbox (no-op if already checked).
     ///
     /// # Errors
     ///
     /// Returns an error if the element is not found.
-    pub async fn fill_selector(&self, selector: &str, text: &str) -> Result<()> {
-        let el = self.find_element(selector).await?;
-        el.click().await.map_err(Error::Cdp)?;
-        self.key_press("Control+a").await?;
-        self.key_press("Delete").await?;
-        self.type_text(text).await
+    pub async fn check(&self, target: &str) -> Result<()> {
+        self.call_on_target(target, "function() { if (!this.checked) this.click(); }")
+            .await?;
+        Ok(())
+    }
+
+    /// Uncheck a checkbox (no-op if already unchecked).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the element is not found.
+    pub async fn uncheck(&self, target: &str) -> Result<()> {
+        self.call_on_target(target, "function() { if (this.checked) this.click(); }")
+            .await?;
+        Ok(())
+    }
+
+    /// Scroll the page or a specific element.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the scroll JS fails.
+    pub async fn scroll(
+        &self,
+        direction: ScrollDirection,
+        pixels: i64,
+        target: Option<&str>,
+    ) -> Result<()> {
+        let (dx, dy) = match direction {
+            ScrollDirection::Down => (0, pixels),
+            ScrollDirection::Up => (0, -pixels),
+            ScrollDirection::Right => (pixels, 0),
+            ScrollDirection::Left => (-pixels, 0),
+        };
+
+        if let Some(t) = target {
+            let escaped = t.replace('\\', "\\\\").replace('\'', "\\'");
+            self.eval(&format!(
+                "document.querySelector('{escaped}')?.scrollBy({dx},{dy})"
+            ))
+            .await?;
+        } else {
+            self.eval(&format!("window.scrollBy({dx},{dy})")).await?;
+        }
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
-    // Page info
+    // Query
     // -----------------------------------------------------------------------
+
+    /// Get text content of the page or a specific element.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if evaluation fails.
+    pub async fn get_text(&self, target: Option<&str>) -> Result<String> {
+        if let Some(t) = target {
+            self.call_text_on_target(
+                t,
+                "function() { return this.innerText || this.textContent || ''; }",
+            )
+            .await
+        } else {
+            let val = self.eval("document.body?.innerText || ''").await?;
+            Ok(val.as_str().unwrap_or("").to_owned())
+        }
+    }
 
     /// Get the current page URL.
     ///
@@ -289,22 +341,55 @@ impl Page {
     ///
     /// Returns an error if JS evaluation fails.
     pub async fn title(&self) -> Result<String> {
-        let result = self
+        let r = self
             .inner
             .evaluate("document.title")
             .await
             .map_err(Error::Cdp)?;
-        let title: String = result.into_value().unwrap_or_default();
-        Ok(title)
+        Ok(r.into_value::<String>().unwrap_or_default())
     }
 
-    /// Get the page HTML content.
+    /// Get the full page HTML.
     ///
     /// # Errors
     ///
     /// Returns an error if the CDP command fails.
     pub async fn content(&self) -> Result<String> {
         self.inner.content().await.map_err(Error::Cdp)
+    }
+
+    /// Get `innerHTML` of an element.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the element is not found.
+    pub async fn get_html(&self, target: &str) -> Result<String> {
+        self.call_text_on_target(target, "function() { return this.innerHTML || ''; }")
+            .await
+    }
+
+    /// Get the `value` property of an input element.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the element is not found.
+    pub async fn get_value(&self, target: &str) -> Result<String> {
+        self.call_text_on_target(target, "function() { return this.value || ''; }")
+            .await
+    }
+
+    /// Get an attribute of an element.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the element is not found.
+    pub async fn get_attribute(&self, target: &str, attribute: &str) -> Result<String> {
+        let escaped = attribute.replace('\\', "\\\\").replace('\'', "\\'");
+        self.call_text_on_target(
+            target,
+            &format!("function() {{ return this.getAttribute('{escaped}') || ''; }}"),
+        )
+        .await
     }
 
     // -----------------------------------------------------------------------
@@ -327,7 +412,7 @@ impl Page {
             .map_err(Error::Cdp)
     }
 
-    /// Capture a JPEG screenshot of the viewport.
+    /// Capture a JPEG screenshot.
     ///
     /// # Errors
     ///
@@ -345,7 +430,7 @@ impl Page {
     }
 
     // -----------------------------------------------------------------------
-    // JavaScript evaluation
+    // JavaScript
     // -----------------------------------------------------------------------
 
     /// Evaluate a `JavaScript` expression and return the raw result.
@@ -355,20 +440,18 @@ impl Page {
     /// Returns an error if JS evaluation fails.
     pub async fn eval(&self, expression: &str) -> Result<serde_json::Value> {
         let result = self.inner.evaluate(expression).await.map_err(Error::Cdp)?;
-
         Ok(result
             .into_value::<serde_json::Value>()
             .unwrap_or(serde_json::Value::Null))
     }
 
-    /// Evaluate JS and deserialize the result into type `T`.
+    /// Evaluate JS and deserialize the result.
     ///
     /// # Errors
     ///
     /// Returns an error if evaluation or deserialization fails.
     pub async fn eval_as<T: serde::de::DeserializeOwned>(&self, expression: &str) -> Result<T> {
         let result = self.inner.evaluate(expression).await.map_err(Error::Cdp)?;
-
         result
             .into_value()
             .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e.to_string())))
@@ -378,38 +461,18 @@ impl Page {
     // Keyboard
     // -----------------------------------------------------------------------
 
-    /// Press a single key (e.g. `"Enter"`, `"Tab"`, `"Escape"`, `"Control+a"`).
+    /// Press a key combo (e.g. `"Enter"`, `"Tab"`, `"Control+a"`).
     ///
     /// # Errors
     ///
     /// Returns an error if the CDP command fails.
     pub async fn key_press(&self, key: &str) -> Result<()> {
-        self.inner
-            .execute(
-                DispatchKeyEventParams::builder()
-                    .r#type(DispatchKeyEventType::KeyDown)
-                    .key(key)
-                    .build()
-                    .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?,
-            )
-            .await
-            .map_err(Error::Cdp)?;
-
-        self.inner
-            .execute(
-                DispatchKeyEventParams::builder()
-                    .r#type(DispatchKeyEventType::KeyUp)
-                    .key(key)
-                    .build()
-                    .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?,
-            )
-            .await
-            .map_err(Error::Cdp)?;
-
-        Ok(())
+        self.dispatch_key(DispatchKeyEventType::KeyDown, key)
+            .await?;
+        self.dispatch_key(DispatchKeyEventType::KeyUp, key).await
     }
 
-    /// Type text character by character with realistic delays.
+    /// Type text character by character.
     ///
     /// # Errors
     ///
@@ -426,7 +489,6 @@ impl Page {
                 )
                 .await
                 .map_err(Error::Cdp)?;
-
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         Ok(())
@@ -436,144 +498,95 @@ impl Page {
     // Wait
     // -----------------------------------------------------------------------
 
-    /// Wait for a CSS selector to appear in the DOM via JS polling.
+    /// Wait for a CSS selector to appear in the DOM.
     ///
     /// # Errors
     ///
     /// Returns an error on timeout.
     pub async fn wait_for_selector(&self, selector: &str, timeout: Duration) -> Result<()> {
-        let deadline = tokio::time::Instant::now() + timeout;
-        loop {
-            let found: bool = self
-                .inner
-                .evaluate(format!("!!document.querySelector('{selector}')"))
-                .await
-                .map_err(Error::Cdp)?
-                .into_value()
-                .unwrap_or(false);
-
-            if found {
-                return Ok(());
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(Error::Timeout(format!(
-                    "selector \"{selector}\" not found within {timeout:?}"
-                )));
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        self.poll_js(
+            &format!("!!document.querySelector('{selector}')"),
+            timeout,
+            &format!("selector \"{selector}\" not found"),
+        )
+        .await
     }
 
-    /// Wait for text to appear anywhere on the page.
+    /// Wait for text to appear on the page.
     ///
     /// # Errors
     ///
     /// Returns an error on timeout.
     pub async fn wait_for_text(&self, text: &str, timeout: Duration) -> Result<()> {
         let escaped = text.replace('\\', "\\\\").replace('\'', "\\'");
-        let expr = format!(
-            "document.body && document.body.innerText && document.body.innerText.includes('{escaped}')"
-        );
-        self.wait_for_function(&expr, timeout).await
+        self.poll_js(
+            &format!("document.body?.innerText?.includes('{escaped}')"),
+            timeout,
+            &format!("text \"{text}\" not found"),
+        )
+        .await
     }
 
-    /// Wait for the URL to contain a pattern (substring match).
+    /// Wait for the URL to contain a pattern.
     ///
     /// # Errors
     ///
     /// Returns an error on timeout.
     pub async fn wait_for_url(&self, pattern: &str, timeout: Duration) -> Result<()> {
         let escaped = pattern.replace('\\', "\\\\").replace('\'', "\\'");
-        let expr = format!("window.location.href.includes('{escaped}')");
-        self.wait_for_function(&expr, timeout).await
+        self.poll_js(
+            &format!("location.href.includes('{escaped}')"),
+            timeout,
+            &format!("URL pattern \"{pattern}\" not matched"),
+        )
+        .await
     }
 
     /// Wait for a `JavaScript` expression to return truthy.
-    ///
-    /// Polls at 100ms intervals until the expression evaluates to `true`
-    /// or the timeout is reached.
     ///
     /// # Errors
     ///
     /// Returns an error on timeout.
     pub async fn wait_for_function(&self, expression: &str, timeout: Duration) -> Result<()> {
-        let deadline = tokio::time::Instant::now() + timeout;
-        let wrapped = format!("!!({expression})");
-        loop {
-            let result: bool = self
-                .inner
-                .evaluate(wrapped.clone())
-                .await
-                .map_err(Error::Cdp)?
-                .into_value()
-                .unwrap_or(false);
-
-            if result {
-                return Ok(());
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(Error::Timeout(format!(
-                    "condition not met within {timeout:?}: {expression}"
-                )));
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        self.poll_js(expression, timeout, expression).await
     }
 
-    /// Wait for network to become idle (no in-flight requests for 500ms).
-    ///
-    /// Uses `JavaScript` `PerformanceObserver` to track resource loading.
-    /// This is more reliable than a fixed sleep but not as robust as
-    /// Playwright's native `networkidle` (which tracks CDP Network events).
+    /// Wait for network idle (no in-flight requests for 500 ms).
     ///
     /// # Errors
     ///
     /// Returns an error on timeout.
     pub async fn wait_for_network_idle(&self, timeout: Duration) -> Result<()> {
-        // Inject a network idle detector via JS
-        let inject_js = r"
+        let inject = r"
             (() => {
-                if (window.__brother_net_idle !== undefined) return;
-                window.__brother_net_idle = false;
+                if (window.__brother_pending !== undefined) return;
                 window.__brother_pending = 0;
-                const orig_fetch = window.fetch;
-                window.fetch = function(...args) {
+                const F = window.fetch;
+                window.fetch = function(...a) {
                     window.__brother_pending++;
-                    window.__brother_net_idle = false;
-                    return orig_fetch.apply(this, args).finally(() => {
-                        window.__brother_pending--;
-                    });
+                    return F.apply(this, a).finally(() => { window.__brother_pending--; });
                 };
-                const orig_open = XMLHttpRequest.prototype.open;
-                const orig_send = XMLHttpRequest.prototype.send;
-                XMLHttpRequest.prototype.open = function(...args) {
-                    this.__brother_tracked = true;
-                    return orig_open.apply(this, args);
-                };
-                XMLHttpRequest.prototype.send = function(...args) {
-                    if (this.__brother_tracked) {
+                const O = XMLHttpRequest.prototype.open;
+                const S = XMLHttpRequest.prototype.send;
+                XMLHttpRequest.prototype.open = function(...a) { this._b = true; return O.apply(this, a); };
+                XMLHttpRequest.prototype.send = function(...a) {
+                    if (this._b) {
                         window.__brother_pending++;
-                        window.__brother_net_idle = false;
-                        this.addEventListener('loadend', () => {
-                            window.__brother_pending--;
-                        }, {once: true});
+                        this.addEventListener('loadend', () => { window.__brother_pending--; }, {once:true});
                     }
-                    return orig_send.apply(this, args);
+                    return S.apply(this, a);
                 };
-            })()
-        ";
+            })()";
+        let _ = self.inner.evaluate(inject.to_owned()).await;
 
-        let _ = self.inner.evaluate(inject_js.to_owned()).await;
-
-        // Poll until no pending requests for 500ms
         let deadline = tokio::time::Instant::now() + timeout;
         let mut quiet_since: Option<tokio::time::Instant> = None;
-        let idle_threshold = Duration::from_millis(500);
+        let idle_ms = Duration::from_millis(500);
 
         loop {
             let pending: i64 = self
                 .inner
-                .evaluate("window.__brother_pending || 0".to_owned())
+                .evaluate("window.__brother_pending||0".to_owned())
                 .await
                 .map_err(Error::Cdp)?
                 .into_value()
@@ -581,17 +594,15 @@ impl Page {
 
             if pending == 0 {
                 let now = tokio::time::Instant::now();
-                let quiet_start = quiet_since.get_or_insert(now);
-                if now.duration_since(*quiet_start) >= idle_threshold {
+                if now.duration_since(*quiet_since.get_or_insert(now)) >= idle_ms {
                     return Ok(());
                 }
             } else {
                 quiet_since = None;
             }
-
             if tokio::time::Instant::now() >= deadline {
                 return Err(Error::Timeout(format!(
-                    "network not idle within {timeout:?} ({pending} requests pending)"
+                    "network not idle within {timeout:?} ({pending} pending)"
                 )));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -607,141 +618,124 @@ impl Page {
     // Low-level access
     // -----------------------------------------------------------------------
 
-    /// Access the underlying `chromiumoxide::Page` for advanced CDP operations.
+    /// Access the underlying `chromiumoxide::Page`.
     #[must_use]
     pub const fn inner(&self) -> &chromiumoxide::Page {
         &self.inner
     }
 
     // -----------------------------------------------------------------------
-    // Internal helpers
+    // Internal: target resolution
     // -----------------------------------------------------------------------
 
-    /// Resolve a ref id to the cached [`Ref`] metadata.
-    async fn resolve_ref(&self, ref_id: &str) -> Result<Ref> {
-        let id = ref_id.strip_prefix('@').unwrap_or(ref_id);
-        // Also strip "ref=" prefix
-        let id = id.strip_prefix("ref=").unwrap_or(id);
-
-        self.refs.lock().await.get(id).cloned().ok_or_else(|| {
-            Error::ElementNotFound(format!("ref {id} not found — call snapshot() first"))
-        })
+    /// Check if a target string looks like a ref.
+    fn is_ref(target: &str) -> bool {
+        target.starts_with('@')
+            || target.starts_with("ref=")
+            || (target.starts_with('e')
+                && target.len() > 1
+                && target[1..].bytes().all(|b| b.is_ascii_digit()))
     }
 
-    /// Resolve a ref to a `RemoteObjectId` with two-phase strategy:
-    /// 1. Fast path: use `backend_node_id` via CDP `DOM.resolveNode`
-    /// 2. Fallback: re-locate via JS using ARIA role + name + nth index
-    ///
-    /// This makes refs survive DOM mutations as long as the element is
-    /// still present with the same role and accessible name.
-    async fn resolve_ref_to_object(
-        &self,
-        r: &Ref,
-    ) -> Result<chromiumoxide::cdp::js_protocol::runtime::RemoteObjectId> {
-        // Fast path: try backend_node_id
-        if r.backend_node_id != 0 {
-            if let Ok(oid) = self.resolve_to_object(r.backend_node_id).await {
-                return Ok(oid);
-            }
-            tracing::debug!(
-                role = %r.role, name = %r.name,
-                "backend_node_id stale, falling back to role+name resolution"
-            );
+    /// Normalize a ref id: strip `@` and `ref=` prefixes.
+    fn normalize_ref(target: &str) -> &str {
+        let s = target.strip_prefix('@').unwrap_or(target);
+        s.strip_prefix("ref=").unwrap_or(s)
+    }
+
+    /// Try to resolve a target as a ref. Returns `None` if not a ref or not found.
+    async fn try_resolve_ref(&self, target: &str) -> Option<Ref> {
+        if !Self::is_ref(target) {
+            return None;
         }
-
-        // Fallback: resolve via JS using role + accessible name
-        self.resolve_by_role_name(&r.role, &r.name, r.nth).await
+        let id = Self::normalize_ref(target);
+        self.refs.lock().await.get(id).cloned()
     }
 
-    /// Locate an element by ARIA role + accessible name via `JavaScript`,
-    /// returning its `RemoteObjectId`.
-    async fn resolve_by_role_name(
+    /// Resolve any target (ref or CSS) to a `RemoteObjectId`.
+    async fn resolve_target_object(
         &self,
-        role: &str,
-        name: &str,
-        nth: Option<usize>,
+        target: &str,
     ) -> Result<chromiumoxide::cdp::js_protocol::runtime::RemoteObjectId> {
-        let nth_idx = nth.unwrap_or(0);
-        let escaped_name = name.replace('\\', "\\\\").replace('\'', "\\'");
-        let escaped_role = role.replace('\\', "\\\\").replace('\'', "\\'");
-
-        // Use TreeWalker over the accessibility tree via JS
-        // This queries all elements and filters by computed role + accessible name
-        let js = format!(
-            r#"(() => {{
-                const role = '{escaped_role}';
-                const name = '{escaped_name}';
-                const nthIdx = {nth_idx};
-
-                // Map common ARIA roles to likely HTML elements/selectors
-                const roleSelectors = {{
-                    'button': 'button, [role="button"], input[type="button"], input[type="submit"]',
-                    'link': 'a[href], [role="link"]',
-                    'textbox': 'input:not([type]), input[type="text"], input[type="email"], input[type="password"], input[type="search"], input[type="url"], input[type="tel"], input[type="number"], textarea, [role="textbox"], [contenteditable="true"]',
-                    'checkbox': 'input[type="checkbox"], [role="checkbox"]',
-                    'radio': 'input[type="radio"], [role="radio"]',
-                    'combobox': 'select, [role="combobox"]',
-                    'heading': 'h1, h2, h3, h4, h5, h6, [role="heading"]',
-                    'listbox': 'select[multiple], [role="listbox"]',
-                    'menuitem': '[role="menuitem"]',
-                    'option': 'option, [role="option"]',
-                    'slider': 'input[type="range"], [role="slider"]',
-                    'switch': '[role="switch"]',
-                    'tab': '[role="tab"]',
-                    'searchbox': 'input[type="search"], [role="searchbox"]',
-                    'spinbutton': 'input[type="number"], [role="spinbutton"]',
-                }};
-
-                const selector = roleSelectors[role] || `[${{`role="${{role}}"`}}]`;
-                const candidates = document.querySelectorAll(selector);
-                let matches = [];
-
-                for (const el of candidates) {{
-                    // Check accessible name (innerText, aria-label, title, etc.)
-                    const accName = el.getAttribute('aria-label')
-                        || el.getAttribute('aria-labelledby') && document.getElementById(el.getAttribute('aria-labelledby'))?.textContent
-                        || el.getAttribute('title')
-                        || el.getAttribute('alt')
-                        || el.getAttribute('placeholder')
-                        || el.textContent?.trim()
-                        || el.value
-                        || '';
-
-                    if (name === '' || accName.trim() === name || accName.trim().startsWith(name)) {{
-                        matches.push(el);
-                    }}
-                }}
-
-                if (matches.length === 0) return null;
-                return matches[Math.min(nthIdx, matches.length - 1)] || null;
-            }})()"#
-        );
-
-        // Use raw CDP Runtime.evaluate to get RemoteObject with object_id
+        if let Some(r) = self.try_resolve_ref(target).await {
+            return self.resolve_ref_to_object(&r).await;
+        }
+        // CSS selector: find via JS and get the raw RemoteObject
+        let escaped = target.replace('\\', "\\\\").replace('\'', "\\'");
+        let js = format!("document.querySelector('{escaped}')");
         let params = EvaluateParams::builder()
             .expression(js)
             .build()
             .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?;
-
         let result = self.inner.execute(params).await.map_err(Error::Cdp)?;
-
-        // The CDP result contains a RemoteObject; extract its object_id
         result
             .result
             .result
             .object_id
-            .ok_or_else(|| {
-                Error::ElementNotFound(format!(
-                    "element with role={role} name=\"{name}\" not found in DOM"
-                ))
-            })
+            .ok_or_else(|| Error::ElementNotFound(format!("selector \"{target}\" not found")))
     }
 
-    /// Focus an element identified by a ref.
-    async fn focus_ref_element(&self, r: &Ref) -> Result<()> {
-        // Try fast path first
+    /// Resolve any target to its center point for click/hover.
+    async fn resolve_target_center(&self, target: &str) -> Result<Point> {
+        let oid = self.resolve_target_object(target).await?;
+        self.get_center_from_object(oid).await
+    }
+
+    /// Call a JS function on a target element and discard the result.
+    async fn call_on_target(&self, target: &str, function: &str) -> Result<()> {
+        let oid = self.resolve_target_object(target).await?;
+        self.inner
+            .evaluate_function(
+                CallFunctionOnParams::builder()
+                    .object_id(oid)
+                    .function_declaration(function)
+                    .build()
+                    .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?,
+            )
+            .await
+            .map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Call a JS function on a target and return the string result.
+    async fn call_text_on_target(&self, target: &str, function: &str) -> Result<String> {
+        let oid = self.resolve_target_object(target).await?;
+        let result = self
+            .inner
+            .evaluate_function(
+                CallFunctionOnParams::builder()
+                    .object_id(oid)
+                    .function_declaration(function)
+                    .build()
+                    .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?,
+            )
+            .await
+            .map_err(Error::Cdp)?;
+        Ok(result.into_value::<String>().unwrap_or_default())
+    }
+
+    // -----------------------------------------------------------------------
+    // Internal: ref resolution (two-phase)
+    // -----------------------------------------------------------------------
+
+    /// Resolve a ref to a `RemoteObjectId` (fast path + JS fallback).
+    async fn resolve_ref_to_object(
+        &self,
+        r: &Ref,
+    ) -> Result<chromiumoxide::cdp::js_protocol::runtime::RemoteObjectId> {
         if r.backend_node_id != 0 {
-            let focus_result = self
+            if let Ok(oid) = self.resolve_backend_node(r.backend_node_id).await {
+                return Ok(oid);
+            }
+            tracing::debug!(role = %r.role, name = %r.name, "backend_node_id stale, falling back to role+name");
+        }
+        self.resolve_by_role_name(&r.role, &r.name, r.nth).await
+    }
+
+    /// Focus a ref element (fast path + JS fallback).
+    async fn focus_ref_element(&self, r: &Ref) -> Result<()> {
+        if r.backend_node_id != 0 {
+            let ok = self
                 .inner
                 .execute(FocusParams {
                     node_id: None,
@@ -749,17 +743,15 @@ impl Page {
                     object_id: None,
                 })
                 .await;
-            if focus_result.is_ok() {
+            if ok.is_ok() {
                 return Ok(());
             }
         }
-
-        // Fallback: resolve via role+name, then focus via JS
-        let object_id = self.resolve_by_role_name(&r.role, &r.name, r.nth).await?;
+        let oid = self.resolve_by_role_name(&r.role, &r.name, r.nth).await?;
         self.inner
             .evaluate_function(
                 CallFunctionOnParams::builder()
-                    .object_id(object_id)
+                    .object_id(oid)
                     .function_declaration("function() { this.focus(); }")
                     .build()
                     .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?,
@@ -769,55 +761,83 @@ impl Page {
         Ok(())
     }
 
-    /// Get the center coordinates of an element via its `RemoteObjectId`.
-    async fn get_center_from_object(
+    /// Locate element by ARIA role + name via JS, returning `RemoteObjectId`.
+    async fn resolve_by_role_name(
         &self,
-        object_id: chromiumoxide::cdp::js_protocol::runtime::RemoteObjectId,
-    ) -> Result<Point> {
-        let result = self
-            .inner
-            .evaluate_function(
-                CallFunctionOnParams::builder()
-                    .object_id(object_id)
-                    .function_declaration(
-                        "function() { \
-                            const r = this.getBoundingClientRect(); \
-                            return JSON.stringify({x: r.x + r.width/2, y: r.y + r.height/2}); \
-                        }",
-                    )
-                    .build()
-                    .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?,
-            )
-            .await
-            .map_err(Error::Cdp)?;
+        role: &str,
+        name: &str,
+        nth: Option<usize>,
+    ) -> Result<chromiumoxide::cdp::js_protocol::runtime::RemoteObjectId> {
+        let nth_idx = nth.unwrap_or(0);
+        let esc_name = name.replace('\\', "\\\\").replace('\'', "\\'");
+        let esc_role = role.replace('\\', "\\\\").replace('\'', "\\'");
 
-        let json_str: String = result
-            .into_value()
-            .map_err(|_| Error::ElementNotFound("failed to get bounding rect".into()))?;
+        let js = format!(
+            r#"(() => {{
+                const R = {{
+                    button: 'button,[role="button"],input[type="button"],input[type="submit"]',
+                    link: 'a[href],[role="link"]',
+                    textbox: 'input:not([type]),input[type="text"],input[type="email"],input[type="password"],input[type="search"],input[type="url"],input[type="tel"],input[type="number"],textarea,[role="textbox"],[contenteditable="true"]',
+                    checkbox: 'input[type="checkbox"],[role="checkbox"]',
+                    radio: 'input[type="radio"],[role="radio"]',
+                    combobox: 'select,[role="combobox"]',
+                    heading: 'h1,h2,h3,h4,h5,h6,[role="heading"]',
+                    listbox: 'select[multiple],[role="listbox"]',
+                    menuitem: '[role="menuitem"]',
+                    option: 'option,[role="option"]',
+                    slider: 'input[type="range"],[role="slider"]',
+                    switch: '[role="switch"]',
+                    tab: '[role="tab"]',
+                    searchbox: 'input[type="search"],[role="searchbox"]',
+                    spinbutton: 'input[type="number"],[role="spinbutton"]',
+                }};
+                const sel = R['{esc_role}'] || '[role="{esc_role}"]';
+                const m = [];
+                for (const el of document.querySelectorAll(sel)) {{
+                    const n = el.getAttribute('aria-label')
+                        || el.getAttribute('title')
+                        || el.getAttribute('alt')
+                        || el.getAttribute('placeholder')
+                        || el.textContent?.trim()
+                        || el.value || '';
+                    if ('{esc_name}' === '' || n.trim() === '{esc_name}' || n.trim().startsWith('{esc_name}'))
+                        m.push(el);
+                }}
+                return m[Math.min({nth_idx}, m.length - 1)] || null;
+            }})()"#
+        );
 
-        let coords: serde_json::Value = serde_json::from_str(&json_str)?;
-        let x = coords["x"].as_f64().unwrap_or(0.0);
-        let y = coords["y"].as_f64().unwrap_or(0.0);
-
-        Ok(Point { x, y })
+        let params = EvaluateParams::builder()
+            .expression(js)
+            .build()
+            .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?;
+        let result = self.inner.execute(params).await.map_err(Error::Cdp)?;
+        result.result.result.object_id.ok_or_else(|| {
+            Error::ElementNotFound(format!(
+                "element role={role} name=\"{name}\" not found in DOM"
+            ))
+        })
     }
 
-    /// Resolve a backend node id to a CDP `RemoteObjectId`.
-    async fn resolve_to_object(
+    // -----------------------------------------------------------------------
+    // Internal: CDP primitives
+    // -----------------------------------------------------------------------
+
+    /// Resolve a backend node ID to `RemoteObjectId`.
+    async fn resolve_backend_node(
         &self,
-        backend_node_id: i64,
+        id: i64,
     ) -> Result<chromiumoxide::cdp::js_protocol::runtime::RemoteObjectId> {
         let result = self
             .inner
             .execute(ResolveNodeParams {
                 node_id: None,
-                backend_node_id: Some(BackendNodeId::new(backend_node_id)),
+                backend_node_id: Some(BackendNodeId::new(id)),
                 object_group: Some("brother".to_owned()),
                 execution_context_id: None,
             })
             .await
             .map_err(Error::Cdp)?;
-
         result
             .result
             .object
@@ -825,7 +845,37 @@ impl Page {
             .ok_or_else(|| Error::ElementNotFound("node has no object id".into()))
     }
 
-    /// Find an element by CSS selector.
+    /// Get center point of an element from its `RemoteObjectId`.
+    async fn get_center_from_object(
+        &self,
+        oid: chromiumoxide::cdp::js_protocol::runtime::RemoteObjectId,
+    ) -> Result<Point> {
+        let result = self
+            .inner
+            .evaluate_function(
+                CallFunctionOnParams::builder()
+                    .object_id(oid)
+                    .function_declaration(
+                        "function(){const r=this.getBoundingClientRect();\
+                         return JSON.stringify({x:r.x+r.width/2,y:r.y+r.height/2})}",
+                    )
+                    .build()
+                    .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?,
+            )
+            .await
+            .map_err(Error::Cdp)?;
+
+        let s: String = result
+            .into_value()
+            .map_err(|_| Error::ElementNotFound("failed to get bounding rect".into()))?;
+        let v: serde_json::Value = serde_json::from_str(&s)?;
+        Ok(Point {
+            x: v["x"].as_f64().unwrap_or(0.0),
+            y: v["y"].as_f64().unwrap_or(0.0),
+        })
+    }
+
+    /// Find element by CSS selector.
     async fn find_element(&self, selector: &str) -> Result<chromiumoxide::element::Element> {
         self.inner
             .find_element(selector)
@@ -833,16 +883,75 @@ impl Page {
             .map_err(|_| Error::ElementNotFound(format!("selector \"{selector}\" not found")))
     }
 
-    /// Get the current history index.
+    /// Get current navigation history index.
     async fn current_history_index(&self) -> Result<usize> {
-        let result = self
+        let r = self
             .inner
             .execute(GetNavigationHistoryParams::default())
             .await
             .map_err(Error::Cdp)?;
-
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-        let idx = result.result.current_index as usize;
+        let idx = r.result.current_index as usize;
         Ok(idx)
+    }
+
+    /// Dispatch a key event.
+    async fn dispatch_key(&self, kind: DispatchKeyEventType, key: &str) -> Result<()> {
+        self.inner
+            .execute(
+                DispatchKeyEventParams::builder()
+                    .r#type(kind)
+                    .key(key)
+                    .build()
+                    .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?,
+            )
+            .await
+            .map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Dispatch a mouse event at a point.
+    async fn dispatch_mouse(
+        &self,
+        kind: DispatchMouseEventType,
+        point: Point,
+        click_count: i64,
+    ) -> Result<()> {
+        self.inner
+            .execute(
+                DispatchMouseEventParams::builder()
+                    .r#type(kind)
+                    .x(point.x)
+                    .y(point.y)
+                    .button(MouseButton::Left)
+                    .click_count(click_count)
+                    .build()
+                    .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?,
+            )
+            .await
+            .map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Poll a JS expression until truthy or timeout.
+    async fn poll_js(&self, expr: &str, timeout: Duration, desc: &str) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let wrapped = format!("!!({expr})");
+        loop {
+            let ok: bool = self
+                .inner
+                .evaluate(wrapped.clone())
+                .await
+                .map_err(Error::Cdp)?
+                .into_value()
+                .unwrap_or(false);
+            if ok {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(Error::Timeout(format!("{desc} within {timeout:?}")));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 }

@@ -45,9 +45,7 @@ impl DaemonClient {
                 });
             }
             if tokio::time::Instant::now() >= deadline {
-                return Err(Error::Browser(
-                    "timeout waiting for daemon to start".into(),
-                ));
+                return Err(Error::Browser("timeout waiting for daemon to start".into()));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -98,9 +96,8 @@ impl DaemonClient {
             return Err(Error::Browser("daemon closed connection".into()));
         }
 
-        serde_json::from_str(&line).map_err(|e| {
-            Error::Browser(format!("invalid response from daemon: {e}"))
-        })
+        serde_json::from_str(&line)
+            .map_err(|e| Error::Browser(format!("invalid response from daemon: {e}")))
     }
 }
 
@@ -109,15 +106,13 @@ async fn try_connect_existing() -> Option<TcpStream> {
     let port_file = protocol::port_file_path()?;
     let content = tokio::fs::read_to_string(&port_file).await.ok()?;
     let port: u16 = content.trim().parse().ok()?;
-    TcpStream::connect(format!("127.0.0.1:{port}"))
-        .await
-        .ok()
+    TcpStream::connect(format!("127.0.0.1:{port}")).await.ok()
 }
 
 /// Start a daemon as a background process.
 fn start_daemon() -> crate::Result<()> {
-    let exe = std::env::current_exe()
-        .map_err(|e| Error::Browser(format!("cannot find self: {e}")))?;
+    let exe =
+        std::env::current_exe().map_err(|e| Error::Browser(format!("cannot find self: {e}")))?;
 
     // Spawn the daemon as a detached process.
     // The CLI binary should support a hidden "daemon" subcommand.

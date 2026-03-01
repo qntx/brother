@@ -21,7 +21,7 @@
 //! println!("{}", snapshot.tree());
 //!
 //! // Click element by ref from snapshot
-//! page.click_ref("e1").await?;
+//! page.click("@e1").await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -39,4 +39,5 @@ pub use browser::Browser;
 pub use config::BrowserConfig;
 pub use error::{Error, Result};
 pub use page::Page;
+pub use protocol::ScrollDirection;
 pub use snapshot::{Ref, RefMap, Snapshot, SnapshotOptions};

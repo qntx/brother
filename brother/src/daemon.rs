@@ -1,21 +1,14 @@
 //! Daemon server — long-running process that holds the browser instance.
 //!
-//! The daemon listens on `127.0.0.1:<port>` and accepts newline-delimited JSON
-//! [`Request`](crate::protocol::Request) messages, executing them against the
-//! managed browser and returning [`Response`](crate::protocol::Response)
-//! messages.
-//!
-//! # Lifecycle
-//!
-//! 1. CLI checks for a running daemon via the port file.
-//! 2. If absent, CLI spawns `brother daemon` as a background process.
-//! 3. The daemon writes its TCP port to `~/.brother/daemon.port`.
-//! 4. CLI connects, sends commands, receives responses.
-//! 5. Daemon auto-shuts down after an idle timeout (default 5 min).
+//! Listens on `127.0.0.1:<port>`, accepts newline-delimited JSON
+//! [`Request`](crate::protocol::Request) messages, and returns
+//! [`Response`](crate::protocol::Response) messages. The browser is lazily
+//! launched on first command.
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::Engine;
 use futures::StreamExt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
@@ -24,45 +17,35 @@ use tokio::sync::Mutex;
 use crate::config::BrowserConfig;
 use crate::error::Error;
 use crate::page::Page;
-use crate::protocol::{
-    Request, Response, ResponseData, WaitCondition, WaitStrategy,
-};
+use crate::protocol::{Request, Response, ResponseData, WaitCondition, WaitStrategy};
 
-/// Default idle timeout before the daemon shuts itself down.
+/// Default idle timeout before auto-shutdown.
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// Managed browser state shared across connections.
+/// Shared state across connections.
 struct DaemonState {
-    /// The browser instance (lazily launched).
     browser: Option<crate::Browser>,
-    /// The active page.
     page: Option<Page>,
-    /// Timestamp of the last command (for idle timeout).
     last_activity: tokio::time::Instant,
 }
 
 /// Run the daemon server.
 ///
-/// Binds to a random port on `127.0.0.1`, writes the port to the port file,
-/// and serves commands until idle timeout or explicit close.
-///
 /// # Errors
 ///
-/// Returns an error if binding or port-file writing fails.
+/// Returns an error if binding or port-file I/O fails.
 pub async fn run(idle_timeout: Option<Duration>) -> crate::Result<()> {
     let timeout = idle_timeout.unwrap_or(DEFAULT_IDLE_TIMEOUT);
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
-        .map_err(|e| Error::Browser(format!("failed to bind TCP: {e}")))?;
+        .map_err(|e| Error::Browser(format!("bind failed: {e}")))?;
 
     let addr = listener
         .local_addr()
-        .map_err(|e| Error::Browser(format!("failed to get local addr: {e}")))?;
+        .map_err(|e| Error::Browser(format!("addr failed: {e}")))?;
 
-    // Write port file
     write_port_file(addr.port()).await?;
     write_pid_file().await?;
-
     tracing::info!(port = addr.port(), "daemon listening");
 
     let state = Arc::new(Mutex::new(DaemonState {
@@ -71,58 +54,51 @@ pub async fn run(idle_timeout: Option<Duration>) -> crate::Result<()> {
         last_activity: tokio::time::Instant::now(),
     }));
 
-    // Idle timeout watcher
-    let state_for_idle = Arc::clone(&state);
+    // Idle watcher
+    let idle_state = Arc::clone(&state);
     let mut idle_handle = tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(10)).await;
-            let last = state_for_idle.lock().await.last_activity;
-            if last.elapsed() >= timeout {
-                tracing::info!("idle timeout reached, shutting down");
+            if idle_state.lock().await.last_activity.elapsed() >= timeout {
+                tracing::info!("idle timeout, shutting down");
                 break;
             }
         }
     });
 
-    // Accept connections until idle timeout or close signal
     loop {
         tokio::select! {
-            accept_result = listener.accept() => {
-                match accept_result {
+            result = listener.accept() => {
+                match result {
                     Ok((stream, peer)) => {
-                        tracing::debug!(?peer, "client connected");
-                        let state = Arc::clone(&state);
+                        tracing::debug!(?peer, "connected");
+                        let st = Arc::clone(&state);
                         tokio::spawn(async move {
-                            if let Err(e) = handle_connection(stream, state).await {
+                            if let Err(e) = handle_connection(stream, st).await {
                                 tracing::error!(%e, "connection error");
                             }
                         });
                     }
-                    Err(e) => {
-                        tracing::error!(%e, "accept error");
-                    }
+                    Err(e) => tracing::error!(%e, "accept error"),
                 }
             }
-            _ = &mut idle_handle => {
-                break;
-            }
+            _ = &mut idle_handle => break,
         }
     }
 
-    // Cleanup
     cleanup_files().await;
-
-    // Close browser if still running
-    let mut guard = state.lock().await;
-    if let Some(browser) = guard.browser.take() {
-        let _ = browser.close().await;
+    let browser = state.lock().await.browser.take();
+    if let Some(b) = browser {
+        let _ = b.close().await;
     }
-
     tracing::info!("daemon stopped");
     Ok(())
 }
 
-/// Handle a single TCP connection (may carry multiple requests).
+// ---------------------------------------------------------------------------
+// Connection handler
+// ---------------------------------------------------------------------------
+
 async fn handle_connection(
     stream: tokio::net::TcpStream,
     state: Arc<Mutex<DaemonState>>,
@@ -135,8 +111,6 @@ async fn handle_connection(
         if line.is_empty() {
             continue;
         }
-
-        // Update activity timestamp
         state.lock().await.last_activity = tokio::time::Instant::now();
 
         let response = match serde_json::from_str::<Request>(&line) {
@@ -144,12 +118,7 @@ async fn handle_connection(
                 let is_close = matches!(req, Request::Close);
                 let resp = dispatch(req, &state).await;
                 if is_close {
-                    // Send response then break
-                    let json = serde_json::to_string(&resp).unwrap_or_default();
-                    let _ = writer.write_all(json.as_bytes()).await;
-                    let _ = writer.write_all(b"\n").await;
-                    let _ = writer.flush().await;
-                    // Signal shutdown by cleaning up files
+                    send(&mut writer, &resp).await;
                     cleanup_files().await;
                     std::process::exit(0);
                 }
@@ -158,52 +127,115 @@ async fn handle_connection(
             Err(e) => Response::error(format!("invalid request: {e}")),
         };
 
-        let json = serde_json::to_string(&response).unwrap_or_default();
-        if writer.write_all(json.as_bytes()).await.is_err() {
+        if !send(&mut writer, &response).await {
             break;
         }
-        if writer.write_all(b"\n").await.is_err() {
-            break;
-        }
-        let _ = writer.flush().await;
     }
-
     Ok(())
 }
 
-/// Dispatch a single request to the appropriate handler.
+/// Send a JSON response over the wire. Returns `false` on write error.
+async fn send(writer: &mut tokio::net::tcp::OwnedWriteHalf, resp: &Response) -> bool {
+    let json = serde_json::to_string(resp).unwrap_or_default();
+    if writer.write_all(json.as_bytes()).await.is_err() || writer.write_all(b"\n").await.is_err() {
+        return false;
+    }
+    let _ = writer.flush().await;
+    true
+}
+
+// ---------------------------------------------------------------------------
+// Macros (must be defined before use)
+// ---------------------------------------------------------------------------
+
+/// Execute a page method returning `Result<()>` → `Response::ok()` or error.
+macro_rules! page_ok {
+    ($state:expr, $($call:tt)*) => {{
+        let page = match get_page($state).await {
+            Ok(p) => p,
+            Err(r) => return r,
+        };
+        match page.$($call)*.await {
+            Ok(()) => Response::ok(),
+            Err(e) => Response::error(e.to_string()),
+        }
+    }};
+}
+
+/// Execute a page method returning `Result<String>` → `ResponseData::Text`.
+macro_rules! page_text {
+    ($state:expr, $($call:tt)*) => {{
+        let page = match get_page($state).await {
+            Ok(p) => p,
+            Err(r) => return r,
+        };
+        match page.$($call)*.await {
+            Ok(text) => Response::ok_data(ResponseData::Text { text }),
+            Err(e) => Response::error(e.to_string()),
+        }
+    }};
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch
+// ---------------------------------------------------------------------------
+
+#[allow(clippy::cognitive_complexity)] // Pure routing function — splitting would reduce clarity.
 async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> Response {
     match req {
-        Request::Launch { headless, args } => cmd_launch(state, headless, args).await,
+        // Navigation
         Request::Navigate { url, wait } => cmd_navigate(state, &url, wait).await,
+        Request::Back => page_ok!(state, go_back()),
+        Request::Forward => page_ok!(state, go_forward()),
+        Request::Reload => page_ok!(state, reload()),
+
+        // Observation
         Request::Snapshot { options } => cmd_snapshot(state, options).await,
-        Request::Click { target } => cmd_click(state, &target).await,
-        Request::Fill { target, value } => cmd_fill(state, &target, &value).await,
-        Request::Type { target, text } => cmd_type(state, target.as_deref(), &text).await,
-        Request::Screenshot { full_page: _ } => cmd_screenshot(state).await,
+        Request::Screenshot { .. } => cmd_screenshot(state).await,
         Request::Eval { expression } => cmd_eval(state, &expression).await,
-        Request::Text { selector } => cmd_text(state, selector.as_deref()).await,
-        Request::GetUrl => cmd_get_url(state).await,
-        Request::GetTitle => cmd_get_title(state).await,
-        Request::Back => cmd_back(state).await,
-        Request::Forward => cmd_forward(state).await,
-        Request::Reload => cmd_reload(state).await,
-        Request::Wait { condition } => cmd_wait(state, condition).await,
-        Request::Hover { target } => cmd_hover(state, &target).await,
-        Request::Focus { target } => cmd_focus(state, &target).await,
-        Request::Status => cmd_status(state).await,
-        Request::Close => {
-            // Handled in handle_connection, but just in case:
-            Response::ok()
+
+        // Interaction
+        Request::Click { target } => page_ok!(state, click(&target)),
+        Request::DblClick { target } => page_ok!(state, dblclick(&target)),
+        Request::Fill { target, value } => page_ok!(state, fill(&target, &value)),
+        Request::Type { target, text } => cmd_type(state, target.as_deref(), &text).await,
+        Request::Press { key } => page_ok!(state, key_press(&key)),
+        Request::Select { target, value } => page_ok!(state, select_option(&target, &value)),
+        Request::Check { target } => page_ok!(state, check(&target)),
+        Request::Uncheck { target } => page_ok!(state, uncheck(&target)),
+        Request::Hover { target } => page_ok!(state, hover(&target)),
+        Request::Focus { target } => page_ok!(state, focus(&target)),
+        Request::Scroll {
+            direction,
+            pixels,
+            target,
+        } => {
+            page_ok!(state, scroll(direction, pixels, target.as_deref()))
         }
+
+        // Query
+        Request::GetText { target } => cmd_text(state, target.as_deref()).await,
+        Request::GetUrl => page_text!(state, url()),
+        Request::GetTitle => page_text!(state, title()),
+        Request::GetHtml { target } => page_text!(state, get_html(&target)),
+        Request::GetValue { target } => page_text!(state, get_value(&target)),
+        Request::GetAttribute { target, attribute } => {
+            page_text!(state, get_attribute(&target, &attribute))
+        }
+
+        // Wait
+        Request::Wait { condition } => cmd_wait(state, condition).await,
+
+        // Lifecycle
+        Request::Status => cmd_status(state).await,
+        Request::Close => Response::ok(),
     }
 }
 
 // ---------------------------------------------------------------------------
-// Command handlers
+// Browser lifecycle
 // ---------------------------------------------------------------------------
 
-/// Ensure a browser is launched and return a page.
 async fn ensure_browser(state: &Arc<Mutex<DaemonState>>) -> Result<(), Response> {
     let mut guard = state.lock().await;
     if guard.browser.is_none() {
@@ -212,78 +244,47 @@ async fn ensure_browser(state: &Arc<Mutex<DaemonState>>) -> Result<(), Response>
                 guard.browser = Some(browser);
                 guard.page = Some(page);
             }
-            Err(e) => return Err(Response::error(format!("failed to launch browser: {e}"))),
+            Err(e) => return Err(Response::error(format!("launch failed: {e}"))),
         }
     }
     Ok(())
 }
 
-/// Launch a browser and open a blank page, spawning the handler task.
-async fn launch_browser(
-    config: BrowserConfig,
-) -> crate::Result<(crate::Browser, Page)> {
+async fn launch_browser(config: BrowserConfig) -> crate::Result<(crate::Browser, Page)> {
     let (browser, mut handler) = crate::Browser::launch(config).await?;
-    // Spawn the CDP handler as a background task
     tokio::spawn(async move { while handler.next().await.is_some() {} });
     let page = browser.new_blank_page().await?;
     Ok((browser, page))
 }
 
-/// Get a reference to the active page, or return an error response.
 async fn get_page(state: &Arc<Mutex<DaemonState>>) -> Result<Page, Response> {
     ensure_browser(state).await?;
-    let guard = state.lock().await;
-    guard
+    state
+        .lock()
+        .await
         .page
         .clone()
         .ok_or_else(|| Response::error("no active page"))
 }
 
-async fn cmd_launch(
-    state: &Arc<Mutex<DaemonState>>,
-    _headless: Option<bool>,
-    _args: Vec<String>,
-) -> Response {
-    match ensure_browser(state).await {
-        Ok(()) => Response::ok(),
-        Err(resp) => resp,
-    }
-}
+// ---------------------------------------------------------------------------
+// Command handlers (only for non-trivial responses)
+// ---------------------------------------------------------------------------
 
-async fn cmd_navigate(
-    state: &Arc<Mutex<DaemonState>>,
-    url: &str,
-    wait: WaitStrategy,
-) -> Response {
+async fn cmd_navigate(state: &Arc<Mutex<DaemonState>>, url: &str, wait: WaitStrategy) -> Response {
     let page = match get_page(state).await {
         Ok(p) => p,
-        Err(resp) => return resp,
+        Err(r) => return r,
     };
-
     if let Err(e) = page.goto(url).await {
         return Response::error(format!("navigation failed: {e}"));
     }
-
-    // Apply wait strategy
-    match wait {
-        WaitStrategy::Load | WaitStrategy::DomContentLoaded => {
-            // Already handled by the time goto returns
-        }
-        WaitStrategy::NetworkIdle => {
-            if let Err(e) = page.wait_for_navigation().await {
-                tracing::warn!(%e, "network idle wait failed");
-            }
-        }
+    if matches!(wait, WaitStrategy::NetworkIdle) {
+        let _ = page.wait_for_navigation().await;
     }
-
-    // Gather result data
-    let result_url = page.url().await.unwrap_or_default();
-    let title = page.title().await.unwrap_or_default();
-
-    Response::ok_data(ResponseData::Navigate {
-        url: result_url,
-        title,
-    })
+    let u = page.url().await.unwrap_or_default();
+    let t = page.title().await.unwrap_or_default();
+    Response::ok_data(ResponseData::Navigate { url: u, title: t })
 }
 
 async fn cmd_snapshot(
@@ -292,96 +293,29 @@ async fn cmd_snapshot(
 ) -> Response {
     let page = match get_page(state).await {
         Ok(p) => p,
-        Err(resp) => return resp,
+        Err(r) => return r,
     };
-
     match page.snapshot_with(options).await {
         Ok(snap) => {
-            let refs_json = serde_json::to_value(snap.refs()).unwrap_or_default();
+            let refs = serde_json::to_value(snap.refs()).unwrap_or_default();
             Response::ok_data(ResponseData::Snapshot {
                 tree: snap.tree().to_owned(),
-                refs: refs_json,
+                refs,
             })
         }
         Err(e) => Response::error(format!("snapshot failed: {e}")),
     }
 }
 
-async fn cmd_click(state: &Arc<Mutex<DaemonState>>, target: &str) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
-
-    let result = if is_ref(target) {
-        page.click_ref(target).await
-    } else {
-        page.click_selector(target).await
-    };
-
-    match result {
-        Ok(()) => Response::ok(),
-        Err(e) => Response::error(format!("click failed: {e}")),
-    }
-}
-
-async fn cmd_fill(state: &Arc<Mutex<DaemonState>>, target: &str, value: &str) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
-
-    let result = if is_ref(target) {
-        page.fill_ref(target, value).await
-    } else {
-        page.fill_selector(target, value).await
-    };
-
-    match result {
-        Ok(()) => Response::ok(),
-        Err(e) => Response::error(format!("fill failed: {e}")),
-    }
-}
-
-async fn cmd_type(
-    state: &Arc<Mutex<DaemonState>>,
-    target: Option<&str>,
-    text: &str,
-) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
-
-    if let Some(t) = target {
-        if is_ref(t) {
-            if let Err(e) = page.type_ref(t, text).await {
-                return Response::error(format!("type failed: {e}"));
-            }
-            return Response::ok();
-        }
-        // Focus by selector, then type
-        if let Err(e) = page.click_selector(t).await {
-            return Response::error(format!("focus target failed: {e}"));
-        }
-    }
-
-    match page.type_text(text).await {
-        Ok(()) => Response::ok(),
-        Err(e) => Response::error(format!("type failed: {e}")),
-    }
-}
-
 async fn cmd_screenshot(state: &Arc<Mutex<DaemonState>>) -> Response {
     let page = match get_page(state).await {
         Ok(p) => p,
-        Err(resp) => return resp,
+        Err(r) => return r,
     };
-
     match page.screenshot_png().await {
         Ok(bytes) => {
-            let b64 = base64_encode(&bytes);
-            Response::ok_data(ResponseData::Screenshot { data: b64 })
+            let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            Response::ok_data(ResponseData::Screenshot { data })
         }
         Err(e) => Response::error(format!("screenshot failed: {e}")),
     }
@@ -390,154 +324,91 @@ async fn cmd_screenshot(state: &Arc<Mutex<DaemonState>>) -> Response {
 async fn cmd_eval(state: &Arc<Mutex<DaemonState>>, expression: &str) -> Response {
     let page = match get_page(state).await {
         Ok(p) => p,
-        Err(resp) => return resp,
+        Err(r) => return r,
     };
-
     match page.eval(expression).await {
         Ok(val) => Response::ok_data(ResponseData::Eval { value: val }),
         Err(e) => Response::error(format!("eval failed: {e}")),
     }
 }
 
-async fn cmd_text(state: &Arc<Mutex<DaemonState>>, selector: Option<&str>) -> Response {
+async fn cmd_type(state: &Arc<Mutex<DaemonState>>, target: Option<&str>, text: &str) -> Response {
     let page = match get_page(state).await {
         Ok(p) => p,
-        Err(resp) => return resp,
+        Err(r) => return r,
     };
-
-    let expression = selector.map_or_else(
-        || "document.body.innerText || ''".to_owned(),
-        |sel| format!("(document.querySelector('{sel}') || document.body).innerText || ''"),
-    );
-
-    match page.eval(&expression).await {
-        Ok(val) => {
-            let text = val.as_str().unwrap_or("").to_owned();
-            Response::ok_data(ResponseData::Text { content: text })
+    if let Some(t) = target {
+        if let Err(e) = page.type_into(t, text).await {
+            return Response::error(format!("type failed: {e}"));
         }
-        Err(e) => Response::error(format!("text extraction failed: {e}")),
+        return Response::ok();
     }
-}
-
-async fn cmd_get_url(state: &Arc<Mutex<DaemonState>>) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
-
-    match page.url().await {
-        Ok(url) => Response::ok_data(ResponseData::Url { url }),
-        Err(e) => Response::error(format!("{e}")),
-    }
-}
-
-async fn cmd_get_title(state: &Arc<Mutex<DaemonState>>) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
-
-    match page.title().await {
-        Ok(title) => Response::ok_data(ResponseData::Title { title }),
-        Err(e) => Response::error(format!("{e}")),
-    }
-}
-
-async fn cmd_back(state: &Arc<Mutex<DaemonState>>) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
-    match page.go_back().await {
+    match page.type_text(text).await {
         Ok(()) => Response::ok(),
-        Err(e) => Response::error(format!("{e}")),
+        Err(e) => Response::error(format!("type failed: {e}")),
     }
 }
 
-async fn cmd_forward(state: &Arc<Mutex<DaemonState>>) -> Response {
+async fn cmd_text(state: &Arc<Mutex<DaemonState>>, target: Option<&str>) -> Response {
     let page = match get_page(state).await {
         Ok(p) => p,
-        Err(resp) => return resp,
+        Err(r) => return r,
     };
-    match page.go_forward().await {
-        Ok(()) => Response::ok(),
-        Err(e) => Response::error(format!("{e}")),
-    }
-}
-
-async fn cmd_reload(state: &Arc<Mutex<DaemonState>>) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
-    match page.reload().await {
-        Ok(()) => Response::ok(),
-        Err(e) => Response::error(format!("{e}")),
+    match page.get_text(target).await {
+        Ok(text) => Response::ok_data(ResponseData::Text { text }),
+        Err(e) => Response::error(format!("text failed: {e}")),
     }
 }
 
 async fn cmd_wait(state: &Arc<Mutex<DaemonState>>, condition: WaitCondition) -> Response {
     let page = match get_page(state).await {
         Ok(p) => p,
-        Err(resp) => return resp,
+        Err(r) => return r,
     };
-
     let result = match condition {
         WaitCondition::Selector {
             selector,
             timeout_ms,
-        } => page.wait_for_selector(&selector, Duration::from_millis(timeout_ms)).await,
-        WaitCondition::Text {
-            text,
-            timeout_ms,
-        } => page.wait_for_text(&text, Duration::from_millis(timeout_ms)).await,
+        } => {
+            page.wait_for_selector(&selector, Duration::from_millis(timeout_ms))
+                .await
+        }
+        WaitCondition::Text { text, timeout_ms } => {
+            page.wait_for_text(&text, Duration::from_millis(timeout_ms))
+                .await
+        }
         WaitCondition::Url {
             pattern,
             timeout_ms,
-        } => page.wait_for_url(&pattern, Duration::from_millis(timeout_ms)).await,
+        } => {
+            page.wait_for_url(&pattern, Duration::from_millis(timeout_ms))
+                .await
+        }
         WaitCondition::Function {
             expression,
             timeout_ms,
-        } => page.wait_for_function(&expression, Duration::from_millis(timeout_ms)).await,
-        WaitCondition::LoadState { state, timeout_ms } => {
-            match state {
-                WaitStrategy::NetworkIdle => {
-                    page.wait_for_network_idle(Duration::from_millis(timeout_ms)).await
-                }
-                _ => page.wait_for_navigation().await,
-            }
+        } => {
+            page.wait_for_function(&expression, Duration::from_millis(timeout_ms))
+                .await
         }
+        WaitCondition::LoadState {
+            state: ws,
+            timeout_ms,
+        } => match ws {
+            WaitStrategy::NetworkIdle => {
+                page.wait_for_network_idle(Duration::from_millis(timeout_ms))
+                    .await
+            }
+            _ => page.wait_for_navigation().await,
+        },
         WaitCondition::Duration { ms } => {
             page.wait(Duration::from_millis(ms)).await;
             Ok(())
         }
     };
-
     match result {
         Ok(()) => Response::ok(),
-        Err(e) => Response::error(format!("{e}")),
-    }
-}
-
-async fn cmd_hover(state: &Arc<Mutex<DaemonState>>, target: &str) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
-    match page.hover_ref(target).await {
-        Ok(()) => Response::ok(),
-        Err(e) => Response::error(format!("hover failed: {e}")),
-    }
-}
-
-async fn cmd_focus(state: &Arc<Mutex<DaemonState>>, target: &str) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
-    match page.focus_ref(target).await {
-        Ok(()) => Response::ok(),
-        Err(e) => Response::error(format!("focus failed: {e}")),
+        Err(e) => Response::error(e.to_string()),
     }
 }
 
@@ -556,88 +427,39 @@ async fn cmd_status(state: &Arc<Mutex<DaemonState>>) -> Response {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// File helpers
 // ---------------------------------------------------------------------------
 
-/// Check if a target string is a ref (`@e1`, `e1`, `ref=e1`).
-fn is_ref(target: &str) -> bool {
-    target.starts_with('@')
-        || target.starts_with("ref=")
-        || (target.starts_with('e') && target[1..].chars().all(|c| c.is_ascii_digit()))
-}
-
-
-/// Simple base64 encoding without extra crate.
-fn base64_encode(data: &[u8]) -> String {
-    use std::fmt::Write;
-    const CHARS: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-    let mut result = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0];
-        let b1 = if chunk.len() > 1 { chunk[1] } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] } else { 0 };
-
-        let i0 = (b0 >> 2) as usize;
-        let i1 = (((b0 & 0x03) << 4) | (b1 >> 4)) as usize;
-        let i2 = (((b1 & 0x0F) << 2) | (b2 >> 6)) as usize;
-        let i3 = (b2 & 0x3F) as usize;
-
-        let _ = result.write_char(CHARS[i0] as char);
-        let _ = result.write_char(CHARS[i1] as char);
-        if chunk.len() > 1 {
-            let _ = result.write_char(CHARS[i2] as char);
-        } else {
-            result.push('=');
-        }
-        if chunk.len() > 2 {
-            let _ = result.write_char(CHARS[i3] as char);
-        } else {
-            result.push('=');
-        }
-    }
-    result
-}
-
-/// Write the port number to the runtime directory.
 async fn write_port_file(port: u16) -> crate::Result<()> {
     let path = crate::protocol::port_file_path()
-        .ok_or_else(|| Error::Browser("cannot determine data directory".into()))?;
-
+        .ok_or_else(|| Error::Browser("cannot determine data dir".into()))?;
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
-            .map_err(|e| Error::Browser(format!("cannot create runtime dir: {e}")))?;
+            .map_err(|e| Error::Browser(format!("mkdir failed: {e}")))?;
     }
-
     tokio::fs::write(&path, port.to_string())
         .await
-        .map_err(|e| Error::Browser(format!("cannot write port file: {e}")))?;
-
+        .map_err(|e| Error::Browser(format!("write port file: {e}")))?;
     tracing::debug!(?path, port, "port file written");
     Ok(())
 }
 
-/// Write the daemon PID to the runtime directory.
 async fn write_pid_file() -> crate::Result<()> {
     let path = crate::protocol::pid_file_path()
-        .ok_or_else(|| Error::Browser("cannot determine data directory".into()))?;
-
+        .ok_or_else(|| Error::Browser("cannot determine data dir".into()))?;
     tokio::fs::write(&path, std::process::id().to_string())
         .await
-        .map_err(|e| Error::Browser(format!("cannot write pid file: {e}")))?;
-
+        .map_err(|e| Error::Browser(format!("write pid file: {e}")))?;
     tracing::debug!(?path, "pid file written");
     Ok(())
 }
 
-/// Clean up port and PID files.
 async fn cleanup_files() {
-    if let Some(path) = crate::protocol::port_file_path() {
-        let _ = tokio::fs::remove_file(&path).await;
+    if let Some(p) = crate::protocol::port_file_path() {
+        let _ = tokio::fs::remove_file(&p).await;
     }
-    if let Some(path) = crate::protocol::pid_file_path() {
-        let _ = tokio::fs::remove_file(&path).await;
+    if let Some(p) = crate::protocol::pid_file_path() {
+        let _ = tokio::fs::remove_file(&p).await;
     }
 }

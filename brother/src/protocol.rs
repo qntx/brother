@@ -1,31 +1,22 @@
 //! JSON protocol for daemon ↔ CLI communication.
 //!
-//! The daemon listens on a TCP socket (`127.0.0.1:<port>`). Each message is a
-//! single JSON object terminated by a newline (`\n`). The CLI sends a
-//! [`Request`] and the daemon replies with a [`Response`].
+//! The daemon listens on `127.0.0.1:<port>`. Each message is a single JSON
+//! object terminated by `\n`. The CLI sends a [`Request`]; the daemon replies
+//! with a [`Response`].
 
 use serde::{Deserialize, Serialize};
 
 use crate::snapshot::SnapshotOptions;
 
 // ---------------------------------------------------------------------------
-// Requests (CLI → Daemon)
+// Request  (CLI → Daemon)
 // ---------------------------------------------------------------------------
 
 /// A command sent from the CLI to the daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Request {
-    /// Launch a new browser (no-op if already running).
-    Launch {
-        /// Whether to show the browser window.
-        #[serde(default)]
-        headless: Option<bool>,
-        /// Extra Chromium launch arguments.
-        #[serde(default)]
-        args: Vec<String>,
-    },
-
+    // -- Navigation --------------------------------------------------------
     /// Navigate the active page to a URL.
     Navigate {
         /// Target URL.
@@ -34,97 +25,169 @@ pub enum Request {
         #[serde(default)]
         wait: WaitStrategy,
     },
+    /// Go back in history.
+    Back,
+    /// Go forward in history.
+    Forward,
+    /// Reload the current page.
+    Reload,
 
+    // -- Observation -------------------------------------------------------
     /// Capture an accessibility snapshot.
     Snapshot {
         /// Snapshot filtering options.
         #[serde(default)]
         options: SnapshotOptions,
     },
+    /// Take a screenshot (base64-encoded PNG).
+    Screenshot {
+        /// Capture the full scrollable page.
+        #[serde(default)]
+        full_page: bool,
+    },
+    /// Evaluate `JavaScript` and return the result.
+    Eval {
+        /// JS expression.
+        expression: String,
+    },
 
-    /// Click an element by ref (`@e1`) or CSS selector.
+    // -- Interaction (target = ref `@e1` or CSS selector) ------------------
+    /// Click an element.
     Click {
         /// Ref or CSS selector.
         target: String,
     },
-
-    /// Clear and fill an input by ref or CSS selector.
+    /// Double-click an element.
+    DblClick {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Clear and fill an input.
     Fill {
         /// Ref or CSS selector.
         target: String,
         /// Value to fill.
         value: String,
     },
-
-    /// Type text into the focused element or a target.
+    /// Type text into the focused element (or a target).
     Type {
-        /// Optional ref or CSS selector (types into focused element if absent).
+        /// Optional ref or CSS selector; types into focused element if absent.
         target: Option<String>,
         /// Text to type.
         text: String,
     },
-
-    /// Take a screenshot of the active page.
-    Screenshot {
-        /// If true, capture the full scrollable page.
+    /// Press a key combo (e.g. `"Enter"`, `"Control+a"`).
+    Press {
+        /// Key or key combo.
+        key: String,
+    },
+    /// Select a dropdown option by value.
+    Select {
+        /// Ref or CSS selector of the `<select>` element.
+        target: String,
+        /// Option value to select.
+        value: String,
+    },
+    /// Check a checkbox (no-op if already checked).
+    Check {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Uncheck a checkbox (no-op if already unchecked).
+    Uncheck {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Hover an element.
+    Hover {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Focus an element.
+    Focus {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Scroll the page or an element.
+    Scroll {
+        /// Direction to scroll.
+        direction: ScrollDirection,
+        /// Pixels to scroll (default 500).
+        #[serde(default = "default_scroll_px")]
+        pixels: i64,
+        /// Optional target to scroll (defaults to viewport).
         #[serde(default)]
-        full_page: bool,
+        target: Option<String>,
     },
 
-    /// Evaluate `JavaScript` on the active page.
-    Eval {
-        /// JS expression to evaluate.
-        expression: String,
+    // -- Query -------------------------------------------------------------
+    /// Get text content (whole page or scoped by target).
+    GetText {
+        /// Optional ref or CSS selector.
+        #[serde(default)]
+        target: Option<String>,
     },
-
-    /// Get text content of the page or a specific element.
-    Text {
-        /// Optional CSS selector to scope text extraction.
-        selector: Option<String>,
-    },
-
     /// Get the current page URL.
     GetUrl,
-
     /// Get the current page title.
     GetTitle,
+    /// Get `innerHTML` of an element.
+    GetHtml {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Get the `value` property of an input element.
+    GetValue {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Get an attribute of an element.
+    GetAttribute {
+        /// Ref or CSS selector.
+        target: String,
+        /// Attribute name.
+        attribute: String,
+    },
 
-    /// Go back in history.
-    Back,
-
-    /// Go forward in history.
-    Forward,
-
-    /// Reload the current page.
-    Reload,
-
+    // -- Wait --------------------------------------------------------------
     /// Wait for a condition.
     Wait {
         /// What to wait for.
         condition: WaitCondition,
     },
 
-    /// Hover an element by ref or CSS selector.
-    Hover {
-        /// Ref or CSS selector.
-        target: String,
-    },
-
-    /// Focus an element by ref or CSS selector.
-    Focus {
-        /// Ref or CSS selector.
-        target: String,
-    },
-
+    // -- Lifecycle ---------------------------------------------------------
     /// Check daemon health / browser status.
     Status,
-
     /// Close the browser and shut down the daemon.
     Close,
 }
 
 // ---------------------------------------------------------------------------
-// Wait types
+// Scroll
+// ---------------------------------------------------------------------------
+
+/// Direction for the `Scroll` command.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrollDirection {
+    /// Scroll down (positive Y).
+    Down,
+    /// Scroll up (negative Y).
+    Up,
+    /// Scroll right (positive X).
+    Right,
+    /// Scroll left (negative X).
+    Left,
+}
+
+/// Default scroll distance in pixels.
+const fn default_scroll_px() -> i64 {
+    500
+}
+
+// ---------------------------------------------------------------------------
+// Wait
 // ---------------------------------------------------------------------------
 
 /// Strategy to wait after navigation.
@@ -136,7 +199,7 @@ pub enum WaitStrategy {
     Load,
     /// Wait for `DOMContentLoaded` event.
     DomContentLoaded,
-    /// Wait until no network requests for 500ms.
+    /// Wait until no in-flight network requests for 500 ms.
     NetworkIdle,
 }
 
@@ -144,25 +207,25 @@ pub enum WaitStrategy {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WaitCondition {
-    /// Wait for a CSS selector to appear in the DOM.
+    /// Wait for a CSS selector to appear.
     Selector {
         /// CSS selector.
         selector: String,
-        /// Timeout in milliseconds (default 30 000).
+        /// Timeout in milliseconds.
         #[serde(default = "default_timeout_ms")]
         timeout_ms: u64,
     },
-    /// Wait for text to appear anywhere on the page.
+    /// Wait for text to appear on the page.
     Text {
-        /// Text to search for.
+        /// Substring to look for.
         text: String,
         /// Timeout in milliseconds.
         #[serde(default = "default_timeout_ms")]
         timeout_ms: u64,
     },
-    /// Wait for the URL to match a pattern (substring match).
+    /// Wait for the URL to contain a pattern.
     Url {
-        /// URL substring or pattern.
+        /// Substring or pattern.
         pattern: String,
         /// Timeout in milliseconds.
         #[serde(default = "default_timeout_ms")]
@@ -191,22 +254,22 @@ pub enum WaitCondition {
     },
 }
 
-/// Default timeout: 30 seconds.
+/// Default timeout: 30 s.
 const fn default_timeout_ms() -> u64 {
     30_000
 }
 
 // ---------------------------------------------------------------------------
-// Responses (Daemon → CLI)
+// Response  (Daemon → CLI)
 // ---------------------------------------------------------------------------
 
-/// Response sent from the daemon back to the CLI.
+/// Response from the daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Response {
     /// Command succeeded.
     Ok {
-        /// Optional payload (depends on the command).
+        /// Optional payload.
         #[serde(skip_serializing_if = "Option::is_none")]
         data: Option<ResponseData>,
     },
@@ -218,19 +281,19 @@ pub enum Response {
 }
 
 impl Response {
-    /// Shorthand for a success response with no data.
+    /// Success with no payload.
     #[must_use]
     pub const fn ok() -> Self {
         Self::Ok { data: None }
     }
 
-    /// Shorthand for a success response with data.
+    /// Success with payload.
     #[must_use]
     pub const fn ok_data(data: ResponseData) -> Self {
         Self::Ok { data: Some(data) }
     }
 
-    /// Shorthand for an error response.
+    /// Error response.
     #[must_use]
     pub fn error(message: impl Into<String>) -> Self {
         Self::Error {
@@ -239,7 +302,7 @@ impl Response {
     }
 }
 
-/// Payload variants returned by different commands.
+/// Payload variants returned by commands.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseData {
@@ -250,48 +313,31 @@ pub enum ResponseData {
         /// Page title.
         title: String,
     },
-
     /// Accessibility snapshot.
     Snapshot {
         /// Formatted tree text.
         tree: String,
-        /// Ref map as JSON object.
+        /// Ref metadata map.
         refs: serde_json::Value,
     },
-
-    /// Screenshot bytes (base64-encoded PNG).
+    /// Screenshot (base64 PNG).
     Screenshot {
         /// Base64-encoded image data.
         data: String,
     },
-
     /// `JavaScript` evaluation result.
     Eval {
-        /// Serialized result value.
+        /// Serialized result.
         value: serde_json::Value,
     },
-
-    /// Text content.
+    /// Generic text result (url, title, text, html, value, attribute).
     Text {
-        /// Extracted text.
-        content: String,
+        /// The text content.
+        text: String,
     },
-
-    /// URL string.
-    Url {
-        /// Current page URL.
-        url: String,
-    },
-
-    /// Page title.
-    Title {
-        /// Current page title.
-        title: String,
-    },
-
-    /// Daemon status.
+    /// Daemon / browser status.
     Status {
-        /// Whether a browser is currently running.
+        /// Whether a browser is running.
         browser_running: bool,
         /// Current page URL (if any).
         page_url: Option<String>,
@@ -299,24 +345,16 @@ pub enum ResponseData {
 }
 
 // ---------------------------------------------------------------------------
-// Port file helpers
+// Runtime directory helpers
 // ---------------------------------------------------------------------------
 
-/// Directory where the daemon stores its port file and other runtime data.
-///
-/// Returns `~/.brother/` (or platform equivalent).
-///
-/// # Errors
-///
-/// Returns `None` if the home directory cannot be determined.
+/// Runtime directory for daemon files (`~/.brother/`).
 #[must_use]
 pub fn runtime_dir() -> Option<std::path::PathBuf> {
     dirs::data_local_dir().map(|d| d.join("brother"))
 }
 
 /// Path to the daemon port file.
-///
-/// The file contains the TCP port number as plain ASCII text.
 #[must_use]
 pub fn port_file_path() -> Option<std::path::PathBuf> {
     runtime_dir().map(|d| d.join("daemon.port"))

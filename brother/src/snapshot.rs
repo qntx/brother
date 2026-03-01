@@ -237,6 +237,11 @@ pub fn build_snapshot(nodes: &[serde_json::Value], options: &SnapshotOptions) ->
         );
     }
 
+    // Post-pass: disambiguate refs that share the same (role, name).
+    // Count occurrences of each (role, name) pair, then assign nth indices
+    // only when there are duplicates (nth stays None for unique elements).
+    disambiguate_refs(&mut refs);
+
     Snapshot::new(lines.join("\n"), refs)
 }
 
@@ -428,6 +433,42 @@ fn append_properties(node: &serde_json::Value, role: &str, line: &mut String) {
     }
 }
 
+/// Post-pass: assign `nth` indices to refs that share the same (role, name).
+///
+/// If only one ref has a given (role, name), its `nth` stays `None`.
+/// If multiple refs share the same pair, they get `nth = Some(0)`, `Some(1)`, etc.
+/// in the order they were inserted (which matches document order since we walk
+/// the AX tree depth-first).
+fn disambiguate_refs(refs: &mut RefMap) {
+    // Collect ref ids grouped by (role, name), preserving insertion order
+    let mut groups: HashMap<(String, String), Vec<String>> = HashMap::new();
+    // We need stable iteration order — sort by ref id numerically (e1, e2, ...)
+    let mut ids: Vec<String> = refs.keys().cloned().collect();
+    ids.sort_by_key(|id| {
+        id.strip_prefix('e')
+            .and_then(|n| n.parse::<u32>().ok())
+            .unwrap_or(0)
+    });
+
+    for id in &ids {
+        if let Some(r) = refs.get(id) {
+            let key = (r.role.clone(), r.name.clone());
+            groups.entry(key).or_default().push(id.clone());
+        }
+    }
+
+    // Only assign nth when there are duplicates
+    for group in groups.values() {
+        if group.len() > 1 {
+            for (i, id) in group.iter().enumerate() {
+                if let Some(r) = refs.get_mut(id) {
+                    r.nth = Some(i);
+                }
+            }
+        }
+    }
+}
+
 /// Extract a string value from an AX node property.
 ///
 /// CDP returns `{ "role": { "type": "role", "value": "button" } }` —
@@ -513,5 +554,61 @@ mod tests {
         assert_eq!(link_ref.name, "More information...");
         assert_eq!(link_ref.backend_node_id, 20);
         assert!(link_ref.focusable);
+    }
+
+    #[test]
+    fn nth_disambiguation() {
+        // Two links with the same name should get nth indices
+        let nodes: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[
+                {
+                    "nodeId": "1",
+                    "role": {"type": "role", "value": "WebArea"},
+                    "name": {"type": "computedString", "value": "Test"},
+                    "childIds": ["2", "3", "4"]
+                },
+                {
+                    "nodeId": "2",
+                    "role": {"type": "role", "value": "link"},
+                    "name": {"type": "computedString", "value": "Click me"},
+                    "backendDOMNodeId": 10,
+                    "properties": [],
+                    "childIds": []
+                },
+                {
+                    "nodeId": "3",
+                    "role": {"type": "role", "value": "link"},
+                    "name": {"type": "computedString", "value": "Click me"},
+                    "backendDOMNodeId": 20,
+                    "properties": [],
+                    "childIds": []
+                },
+                {
+                    "nodeId": "4",
+                    "role": {"type": "role", "value": "button"},
+                    "name": {"type": "computedString", "value": "Submit"},
+                    "backendDOMNodeId": 30,
+                    "properties": [],
+                    "childIds": []
+                }
+            ]"#,
+        )
+        .expect("valid JSON");
+
+        let snap = build_snapshot(&nodes, &SnapshotOptions::default());
+        assert_eq!(snap.ref_count(), 3);
+
+        // Two links with same name → nth = Some(0) and Some(1)
+        let r1 = snap.get_ref("e1").expect("first link");
+        let r2 = snap.get_ref("e2").expect("second link");
+        assert_eq!(r1.role, "link");
+        assert_eq!(r2.role, "link");
+        assert_eq!(r1.nth, Some(0));
+        assert_eq!(r2.nth, Some(1));
+
+        // Unique button → nth stays None
+        let r3 = snap.get_ref("e3").expect("button");
+        assert_eq!(r3.role, "button");
+        assert_eq!(r3.nth, None);
     }
 }

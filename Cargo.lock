@@ -109,6 +109,7 @@ dependencies = [
 name = "brother"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "chromiumoxide",
  "dirs",
  "futures",
@@ -124,6 +125,7 @@ dependencies = [
 name = "brother-cli"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "brother",
  "clap",
  "futures",
