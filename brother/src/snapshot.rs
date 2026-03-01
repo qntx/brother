@@ -75,7 +75,7 @@ pub struct Ref {
 }
 
 /// Options for filtering and formatting a snapshot.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SnapshotOptions {
     /// Only include interactive elements (buttons, links, inputs, etc.).
     pub interactive_only: bool,

@@ -36,6 +36,7 @@ clap = { version = "4", features = ["derive"] }
 
 # Utilities
 url = "2"
+dirs = "6"
 
 [profile.release]
 codegen-units = 1

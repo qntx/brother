@@ -27,9 +27,12 @@
 //! ```
 
 mod browser;
+pub mod client;
 mod config;
+pub mod daemon;
 mod error;
 mod page;
+pub mod protocol;
 mod snapshot;
 
 pub use browser::Browser;
