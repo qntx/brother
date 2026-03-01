@@ -11,6 +11,31 @@ repository = "https://github.com/qntx/brother"
 description = "Browser automation for AI agents."
 
 [workspace.dependencies]
+brother = { path = "brother" }
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "process", "time", "fs", "io-util", "sync"] }
+futures = "0.3"
+
+# Browser automation (CDP)
+chromiumoxide = { version = "0.9", default-features = true }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+thiserror = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Utilities
+url = "2"
 
 [profile.release]
 codegen-units = 1

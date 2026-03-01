@@ -1,14 +1,39 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! # Brother
+//!
+//! Browser automation for AI agents, built on Chrome `DevTools` Protocol.
+//!
+//! Brother provides a high-level Rust API for headless browser control,
+//! with first-class support for accessibility snapshots and ref-based
+//! element interaction — the optimal workflow for LLM-driven agents.
+//!
+//! # Quick Start
+//!
+//! ```no_run
+//! use brother::{Browser, BrowserConfig};
+//! use futures::StreamExt;
+//!
+//! # async fn example() -> brother::Result<()> {
+//! let (browser, mut handler) = Browser::launch(BrowserConfig::default()).await?;
+//! tokio::spawn(async move { while handler.next().await.is_some() {} });
+//!
+//! let page = browser.new_page("https://example.com").await?;
+//! let snapshot = page.snapshot().await?;
+//! println!("{}", snapshot.tree());
+//!
+//! // Click element by ref from snapshot
+//! page.click_ref("e1").await?;
+//! # Ok(())
+//! # }
+//! ```
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+mod browser;
+mod config;
+mod error;
+mod page;
+mod snapshot;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use browser::Browser;
+pub use config::BrowserConfig;
+pub use error::{Error, Result};
+pub use page::Page;
+pub use snapshot::{Ref, RefMap, Snapshot, SnapshotOptions};
