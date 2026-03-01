@@ -62,14 +62,22 @@ impl fmt::Display for Snapshot {
 pub type RefMap = HashMap<String, Ref>;
 
 /// Metadata for a single referenced element in the accessibility tree.
+///
+/// Refs are resolved via ARIA role + accessible name (re-queried from live DOM),
+/// so they survive DOM mutations as long as the element is still present.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ref {
     /// ARIA role (e.g. `"button"`, `"link"`, `"textbox"`).
     pub role: String,
     /// Accessible name (e.g. button label, link text).
     pub name: String,
-    /// CDP backend node id for direct element targeting.
+    /// CDP `backendDOMNodeId` — used as a fast-path when the DOM hasn't changed.
+    /// Falls back to role+name resolution if this id becomes stale.
     pub backend_node_id: i64,
+    /// Index for disambiguation when multiple elements share the same role+name.
+    /// `None` means this role+name combination is unique on the page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nth: Option<usize>,
     /// Whether this element is focusable.
     pub focusable: bool,
 }
@@ -312,6 +320,7 @@ fn render_node(
                 role: role.clone(),
                 name: name.clone(),
                 backend_node_id,
+                nth: None,
                 focusable,
             },
         );

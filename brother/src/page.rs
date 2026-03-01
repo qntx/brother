@@ -9,7 +9,7 @@ use chromiumoxide::cdp::browser_protocol::input::{DispatchKeyEventParams, Dispat
 use chromiumoxide::cdp::browser_protocol::page::{
     CaptureScreenshotFormat, GetNavigationHistoryParams, NavigateToHistoryEntryParams,
 };
-use chromiumoxide::cdp::js_protocol::runtime::CallFunctionOnParams;
+use chromiumoxide::cdp::js_protocol::runtime::{CallFunctionOnParams, EvaluateParams};
 use chromiumoxide::layout::Point;
 use chromiumoxide::page::ScreenshotParams;
 use tokio::sync::Mutex;
@@ -156,7 +156,8 @@ impl Page {
     /// Returns [`Error::ElementNotFound`] if the ref is unknown.
     pub async fn click_ref(&self, ref_id: &str) -> Result<()> {
         let r = self.resolve_ref(ref_id).await?;
-        let center = self.get_element_center(r.backend_node_id).await?;
+        let oid = self.resolve_ref_to_object(&r).await?;
+        let center = self.get_center_from_object(oid).await?;
         self.inner.click(center).await.map_err(Error::Cdp)?;
         Ok(())
     }
@@ -168,7 +169,7 @@ impl Page {
     /// Returns [`Error::ElementNotFound`] if the ref is unknown.
     pub async fn fill_ref(&self, ref_id: &str, text: &str) -> Result<()> {
         let r = self.resolve_ref(ref_id).await?;
-        self.focus_backend_node(r.backend_node_id).await?;
+        self.focus_ref_element(&r).await?;
         // Select all existing content and delete
         self.key_press("Control+a").await?;
         self.key_press("Delete").await?;
@@ -182,7 +183,7 @@ impl Page {
     /// Returns [`Error::ElementNotFound`] if the ref is unknown.
     pub async fn type_ref(&self, ref_id: &str, text: &str) -> Result<()> {
         let r = self.resolve_ref(ref_id).await?;
-        self.focus_backend_node(r.backend_node_id).await?;
+        self.focus_ref_element(&r).await?;
         self.type_text(text).await
     }
 
@@ -193,7 +194,7 @@ impl Page {
     /// Returns [`Error::ElementNotFound`] if the ref is unknown.
     pub async fn focus_ref(&self, ref_id: &str) -> Result<()> {
         let r = self.resolve_ref(ref_id).await?;
-        self.focus_backend_node(r.backend_node_id).await
+        self.focus_ref_element(&r).await
     }
 
     /// Hover an element by ref.
@@ -203,7 +204,8 @@ impl Page {
     /// Returns [`Error::ElementNotFound`] if the ref is unknown.
     pub async fn hover_ref(&self, ref_id: &str) -> Result<()> {
         let r = self.resolve_ref(ref_id).await?;
-        let center = self.get_element_center(r.backend_node_id).await?;
+        let oid = self.resolve_ref_to_object(&r).await?;
+        let center = self.get_center_from_object(oid).await?;
         self.inner.move_mouse(center).await.map_err(Error::Cdp)?;
         Ok(())
     }
@@ -215,7 +217,7 @@ impl Page {
     /// Returns [`Error::ElementNotFound`] if the ref is unknown.
     pub async fn text_ref(&self, ref_id: &str) -> Result<String> {
         let r = self.resolve_ref(ref_id).await?;
-        let object_id = self.resolve_to_object(r.backend_node_id).await?;
+        let object_id = self.resolve_ref_to_object(&r).await?;
 
         let result = self
             .inner
@@ -484,29 +486,160 @@ impl Page {
     /// Resolve a ref id to the cached [`Ref`] metadata.
     async fn resolve_ref(&self, ref_id: &str) -> Result<Ref> {
         let id = ref_id.strip_prefix('@').unwrap_or(ref_id);
+        // Also strip "ref=" prefix
+        let id = id.strip_prefix("ref=").unwrap_or(id);
 
         self.refs.lock().await.get(id).cloned().ok_or_else(|| {
             Error::ElementNotFound(format!("ref {id} not found — call snapshot() first"))
         })
     }
 
-    /// Focus a DOM node by its backend node id.
-    async fn focus_backend_node(&self, backend_node_id: i64) -> Result<()> {
-        self.inner
-            .execute(FocusParams {
-                node_id: None,
-                backend_node_id: Some(BackendNodeId::new(backend_node_id)),
-                object_id: None,
+    /// Resolve a ref to a `RemoteObjectId` with two-phase strategy:
+    /// 1. Fast path: use `backend_node_id` via CDP `DOM.resolveNode`
+    /// 2. Fallback: re-locate via JS using ARIA role + name + nth index
+    ///
+    /// This makes refs survive DOM mutations as long as the element is
+    /// still present with the same role and accessible name.
+    async fn resolve_ref_to_object(
+        &self,
+        r: &Ref,
+    ) -> Result<chromiumoxide::cdp::js_protocol::runtime::RemoteObjectId> {
+        // Fast path: try backend_node_id
+        if r.backend_node_id != 0 {
+            if let Ok(oid) = self.resolve_to_object(r.backend_node_id).await {
+                return Ok(oid);
+            }
+            tracing::debug!(
+                role = %r.role, name = %r.name,
+                "backend_node_id stale, falling back to role+name resolution"
+            );
+        }
+
+        // Fallback: resolve via JS using role + accessible name
+        self.resolve_by_role_name(&r.role, &r.name, r.nth).await
+    }
+
+    /// Locate an element by ARIA role + accessible name via `JavaScript`,
+    /// returning its `RemoteObjectId`.
+    async fn resolve_by_role_name(
+        &self,
+        role: &str,
+        name: &str,
+        nth: Option<usize>,
+    ) -> Result<chromiumoxide::cdp::js_protocol::runtime::RemoteObjectId> {
+        let nth_idx = nth.unwrap_or(0);
+        let escaped_name = name.replace('\\', "\\\\").replace('\'', "\\'");
+        let escaped_role = role.replace('\\', "\\\\").replace('\'', "\\'");
+
+        // Use TreeWalker over the accessibility tree via JS
+        // This queries all elements and filters by computed role + accessible name
+        let js = format!(
+            r#"(() => {{
+                const role = '{escaped_role}';
+                const name = '{escaped_name}';
+                const nthIdx = {nth_idx};
+
+                // Map common ARIA roles to likely HTML elements/selectors
+                const roleSelectors = {{
+                    'button': 'button, [role="button"], input[type="button"], input[type="submit"]',
+                    'link': 'a[href], [role="link"]',
+                    'textbox': 'input:not([type]), input[type="text"], input[type="email"], input[type="password"], input[type="search"], input[type="url"], input[type="tel"], input[type="number"], textarea, [role="textbox"], [contenteditable="true"]',
+                    'checkbox': 'input[type="checkbox"], [role="checkbox"]',
+                    'radio': 'input[type="radio"], [role="radio"]',
+                    'combobox': 'select, [role="combobox"]',
+                    'heading': 'h1, h2, h3, h4, h5, h6, [role="heading"]',
+                    'listbox': 'select[multiple], [role="listbox"]',
+                    'menuitem': '[role="menuitem"]',
+                    'option': 'option, [role="option"]',
+                    'slider': 'input[type="range"], [role="slider"]',
+                    'switch': '[role="switch"]',
+                    'tab': '[role="tab"]',
+                    'searchbox': 'input[type="search"], [role="searchbox"]',
+                    'spinbutton': 'input[type="number"], [role="spinbutton"]',
+                }};
+
+                const selector = roleSelectors[role] || `[${{`role="${{role}}"`}}]`;
+                const candidates = document.querySelectorAll(selector);
+                let matches = [];
+
+                for (const el of candidates) {{
+                    // Check accessible name (innerText, aria-label, title, etc.)
+                    const accName = el.getAttribute('aria-label')
+                        || el.getAttribute('aria-labelledby') && document.getElementById(el.getAttribute('aria-labelledby'))?.textContent
+                        || el.getAttribute('title')
+                        || el.getAttribute('alt')
+                        || el.getAttribute('placeholder')
+                        || el.textContent?.trim()
+                        || el.value
+                        || '';
+
+                    if (name === '' || accName.trim() === name || accName.trim().startsWith(name)) {{
+                        matches.push(el);
+                    }}
+                }}
+
+                if (matches.length === 0) return null;
+                return matches[Math.min(nthIdx, matches.length - 1)] || null;
+            }})()"#
+        );
+
+        // Use raw CDP Runtime.evaluate to get RemoteObject with object_id
+        let params = EvaluateParams::builder()
+            .expression(js)
+            .build()
+            .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?;
+
+        let result = self.inner.execute(params).await.map_err(Error::Cdp)?;
+
+        // The CDP result contains a RemoteObject; extract its object_id
+        result
+            .result
+            .result
+            .object_id
+            .ok_or_else(|| {
+                Error::ElementNotFound(format!(
+                    "element with role={role} name=\"{name}\" not found in DOM"
+                ))
             })
+    }
+
+    /// Focus an element identified by a ref.
+    async fn focus_ref_element(&self, r: &Ref) -> Result<()> {
+        // Try fast path first
+        if r.backend_node_id != 0 {
+            let focus_result = self
+                .inner
+                .execute(FocusParams {
+                    node_id: None,
+                    backend_node_id: Some(BackendNodeId::new(r.backend_node_id)),
+                    object_id: None,
+                })
+                .await;
+            if focus_result.is_ok() {
+                return Ok(());
+            }
+        }
+
+        // Fallback: resolve via role+name, then focus via JS
+        let object_id = self.resolve_by_role_name(&r.role, &r.name, r.nth).await?;
+        self.inner
+            .evaluate_function(
+                CallFunctionOnParams::builder()
+                    .object_id(object_id)
+                    .function_declaration("function() { this.focus(); }")
+                    .build()
+                    .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?,
+            )
             .await
             .map_err(Error::Cdp)?;
         Ok(())
     }
 
-    /// Get the center coordinates of an element by backend node id.
-    async fn get_element_center(&self, backend_node_id: i64) -> Result<Point> {
-        let object_id = self.resolve_to_object(backend_node_id).await?;
-
+    /// Get the center coordinates of an element via its `RemoteObjectId`.
+    async fn get_center_from_object(
+        &self,
+        object_id: chromiumoxide::cdp::js_protocol::runtime::RemoteObjectId,
+    ) -> Result<Point> {
         let result = self
             .inner
             .evaluate_function(
