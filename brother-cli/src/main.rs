@@ -28,6 +28,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Connect to an existing browser (requires Chrome launched with --remote-debugging-port).
+    Connect {
+        /// CDP target: port number (e.g. `9222`), ws:// URL, or http:// URL.
+        #[arg(default_value = "9222")]
+        target: String,
+    },
     /// Navigate to a URL.
     Open {
         /// Target URL.
@@ -268,6 +274,9 @@ async fn run(cli: Cli) -> brother::Result<()> {
 /// Map CLI subcommand to daemon protocol request.
 fn build_request(cmd: &Command) -> Request {
     match cmd {
+        Command::Connect { target } => Request::Connect {
+            target: target.clone(),
+        },
         Command::Open { url } => Request::Navigate {
             url: url.clone(),
             wait: WaitStrategy::Load,

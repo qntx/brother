@@ -213,6 +213,9 @@ macro_rules! page_text {
 #[allow(clippy::cognitive_complexity, clippy::large_stack_frames)] // Pure routing function — splitting would reduce clarity; stack size is dominated by the largest async arm.
 async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> Response {
     match req {
+        // Connection
+        Request::Connect { target } => cmd_connect(state, &target).await,
+
         // Navigation
         Request::Navigate { url, wait } => cmd_navigate(state, &url, wait).await,
         Request::Back => page_ok!(state, go_back()),
@@ -323,6 +326,86 @@ async fn launch_browser(config: BrowserConfig) -> crate::Result<(crate::Browser,
     tokio::spawn(async move { while handler.next().await.is_some() {} });
     let page = browser.new_blank_page().await?;
     Ok((browser, page))
+}
+
+/// Connect to an existing browser via CDP websocket URL or debugging port.
+async fn cmd_connect(state: &Arc<Mutex<DaemonState>>, target: &str) -> Response {
+    // Build the websocket URL from the target string.
+    // Accept: "9222", "ws://...", or "http://127.0.0.1:9222".
+    let ws_url = resolve_cdp_endpoint(target).await;
+    let ws_url = match ws_url {
+        Ok(url) => url,
+        Err(e) => return Response::error(format!("failed to resolve CDP endpoint: {e}")),
+    };
+
+    let connect_result = crate::Browser::connect(&ws_url).await;
+    let (browser, mut handler) = match connect_result {
+        Ok(pair) => pair,
+        Err(e) => return Response::error(format!("connect failed: {e}")),
+    };
+    tokio::spawn(async move { while handler.next().await.is_some() {} });
+
+    // Pick up all existing pages from the connected browser.
+    let pages_result = browser.pages().await;
+    let pages = match pages_result {
+        Ok(p) if !p.is_empty() => p,
+        Ok(_) => {
+            // No pages open — create a blank one.
+            match browser.new_blank_page().await {
+                Ok(p) => vec![p],
+                Err(e) => return Response::error(format!("connected but no pages: {e}")),
+            }
+        }
+        Err(e) => return Response::error(format!("connected but failed to list pages: {e}")),
+    };
+
+    let tab_count = pages.len();
+    let mut guard = state.lock().await;
+    guard.browser = Some(browser);
+    guard.pages = pages;
+    guard.active_tab = 0;
+
+    Response::ok_data(ResponseData::Text {
+        text: format!("connected to {ws_url} ({tab_count} tabs)"),
+    })
+}
+
+/// Resolve a CDP target string to a websocket URL.
+///
+/// Accepts:
+/// - A bare port number (e.g. `"9222"`) → fetches `http://127.0.0.1:9222/json/version`
+/// - An HTTP URL (e.g. `"http://127.0.0.1:9222"`) → fetches `/json/version`
+/// - A `ws://` or `wss://` URL → used directly
+async fn resolve_cdp_endpoint(target: &str) -> crate::Result<String> {
+    if target.starts_with("ws://") || target.starts_with("wss://") {
+        return Ok(target.to_string());
+    }
+
+    let http_base = if target.chars().all(|c| c.is_ascii_digit()) {
+        format!("http://127.0.0.1:{target}")
+    } else if target.starts_with("http://") || target.starts_with("https://") {
+        target.to_string()
+    } else {
+        format!("http://{target}")
+    };
+
+    let version_url = format!("{http_base}/json/version");
+    let resp = reqwest::get(&version_url).await.map_err(|e| {
+        Error::Browser(format!(
+            "cannot reach Chrome at {version_url} — is Chrome running with --remote-debugging-port? ({e})"
+        ))
+    })?;
+    let body: serde_json::Value = resp.json().await.map_err(|e| {
+        Error::Browser(format!("invalid JSON from {version_url}: {e}"))
+    })?;
+    body["webSocketDebuggerUrl"]
+        .as_str()
+        .map(String::from)
+        .ok_or_else(|| {
+            Error::Browser(
+                "webSocketDebuggerUrl not found in /json/version response".into(),
+            )
+        })
 }
 
 /// Get the active page (tab).

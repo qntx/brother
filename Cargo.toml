@@ -4,14 +4,14 @@ default-members = ["brother"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/qntx/brother"
 description = "Browser automation for AI agents."
 
 [workspace.dependencies]
-brother = { path = "brother" }
+brother = {version = "0.2", path = "brother" }
 
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "process", "time", "fs", "io-util", "sync"] }
@@ -36,6 +36,9 @@ clap = { version = "4", features = ["derive"] }
 
 # Encoding
 base64 = "0.22"
+
+# HTTP client (for CDP endpoint discovery)
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
 
 # Utilities
 url = "2"

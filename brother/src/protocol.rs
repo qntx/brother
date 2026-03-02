@@ -16,6 +16,13 @@ use crate::snapshot::SnapshotOptions;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Request {
+    // -- Connection --------------------------------------------------------
+    /// Connect to an existing browser via CDP websocket URL or debugging port.
+    Connect {
+        /// CDP websocket URL (e.g. `ws://127.0.0.1:9222/...`), or just a port number.
+        target: String,
+    },
+
     // -- Navigation --------------------------------------------------------
     /// Navigate the active page to a URL.
     Navigate {

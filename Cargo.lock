@@ -107,12 +107,13 @@ dependencies = [
 
 [[package]]
 name = "brother"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "chromiumoxide",
  "dirs",
  "futures",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror",
@@ -123,7 +124,7 @@ dependencies = [
 
 [[package]]
 name = "brother-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "brother",
@@ -137,7 +138,7 @@ dependencies = [
 
 [[package]]
 name = "brother-pw"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "bumpalo"
@@ -976,6 +977,8 @@ dependencies = [
  "log",
  "percent-encoding",
  "pin-project-lite",
+ "serde",
+ "serde_json",
  "sync_wrapper",
  "tokio",
  "tower",
