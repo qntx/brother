@@ -4,9 +4,8 @@
 //! object terminated by `\n`. The CLI sends a [`Request`]; the daemon replies
 //! with a [`Response`].
 
+use brother::{MouseButton, ScrollDirection, SnapshotOptions};
 use serde::{Deserialize, Serialize};
-
-use crate::snapshot::SnapshotOptions;
 
 // ---------------------------------------------------------------------------
 // Request  (CLI → Daemon)
@@ -597,35 +596,8 @@ pub enum Request {
 }
 
 // ---------------------------------------------------------------------------
-// Scroll
+// Route action
 // ---------------------------------------------------------------------------
-
-/// Direction for the `Scroll` command.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ScrollDirection {
-    /// Scroll down (positive Y).
-    Down,
-    /// Scroll up (negative Y).
-    Up,
-    /// Scroll right (positive X).
-    Right,
-    /// Scroll left (negative X).
-    Left,
-}
-
-/// Mouse button for click and mouse commands.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum MouseButton {
-    /// Left mouse button (default).
-    #[default]
-    Left,
-    /// Right mouse button.
-    Right,
-    /// Middle mouse button.
-    Middle,
-}
 
 /// Action for network route interception.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -637,6 +609,10 @@ pub enum RouteAction {
     /// Block the request.
     Abort,
 }
+
+// ---------------------------------------------------------------------------
+// Defaults
+// ---------------------------------------------------------------------------
 
 /// Default scroll distance in pixels.
 const fn default_scroll_px() -> i64 {

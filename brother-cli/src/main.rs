@@ -5,14 +5,17 @@
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
+mod client;
+mod daemon;
+mod protocol;
+
 use std::process::ExitCode;
 
 use base64::Engine;
-use brother::client::DaemonClient;
-use brother::protocol::{
-    MouseButton, Request, Response, ResponseData, RouteAction, ScrollDirection, WaitCondition,
-    WaitStrategy,
-};
+use brother::{MouseButton, ScrollDirection};
+
+use crate::client::DaemonClient;
+use crate::protocol::{Request, Response, ResponseData, RouteAction, WaitCondition, WaitStrategy};
 
 use clap::{Parser, Subcommand};
 
@@ -582,9 +585,10 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn run(cli: Cli) -> brother::Result<()> {
+async fn run(cli: Cli) -> anyhow::Result<()> {
     if matches!(cli.command, Command::Daemon) {
-        return brother::daemon::run(None).await;
+        daemon::run(None).await?;
+        return Ok(());
     }
 
     let json = cli.json;

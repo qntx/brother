@@ -9,14 +9,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine;
+use brother::{Browser, BrowserConfig, Error, Page};
 use futures::StreamExt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
-use crate::config::BrowserConfig;
-use crate::error::Error;
-use crate::page::Page;
 use crate::protocol::{Request, Response, ResponseData, RouteAction, WaitCondition, WaitStrategy};
 
 /// Default idle timeout before auto-shutdown.
@@ -24,7 +22,7 @@ const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_mins(5);
 
 /// Shared state across connections.
 struct DaemonState {
-    browser: Option<crate::Browser>,
+    browser: Option<Browser>,
     /// All open tabs (pages). Index 0 is the first tab opened.
     pages: Vec<Page>,
     /// Index into `pages` for the currently active tab.
@@ -55,7 +53,7 @@ struct InterceptRoute {
 /// # Errors
 ///
 /// Returns an error if binding or port-file I/O fails.
-pub async fn run(idle_timeout: Option<Duration>) -> crate::Result<()> {
+pub async fn run(idle_timeout: Option<Duration>) -> brother::Result<()> {
     let timeout = idle_timeout.unwrap_or(DEFAULT_IDLE_TIMEOUT);
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -128,7 +126,7 @@ pub async fn run(idle_timeout: Option<Duration>) -> crate::Result<()> {
 async fn handle_connection(
     stream: tokio::net::TcpStream,
     state: Arc<Mutex<DaemonState>>,
-) -> crate::Result<()> {
+) -> brother::Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
 
@@ -639,8 +637,8 @@ async fn ensure_browser(state: &Arc<Mutex<DaemonState>>) -> Result<(), Response>
     Ok(())
 }
 
-async fn launch_browser(config: BrowserConfig) -> crate::Result<(crate::Browser, Page)> {
-    let (browser, mut handler) = crate::Browser::launch(config).await?;
+async fn launch_browser(config: BrowserConfig) -> brother::Result<(Browser, Page)> {
+    let (browser, mut handler) = Browser::launch(config).await?;
     tokio::spawn(async move { while handler.next().await.is_some() {} });
     let page = browser.new_blank_page().await?;
     Ok((browser, page))
@@ -648,32 +646,26 @@ async fn launch_browser(config: BrowserConfig) -> crate::Result<(crate::Browser,
 
 /// Connect to an existing browser via CDP websocket URL or debugging port.
 async fn cmd_connect(state: &Arc<Mutex<DaemonState>>, target: &str) -> Response {
-    // Build the websocket URL from the target string.
-    // Accept: "9222", "ws://...", or "http://127.0.0.1:9222".
     let ws_url = resolve_cdp_endpoint(target).await;
     let ws_url = match ws_url {
         Ok(url) => url,
         Err(e) => return Response::error(format!("failed to resolve CDP endpoint: {e}")),
     };
 
-    let connect_result = crate::Browser::connect(&ws_url).await;
+    let connect_result = Browser::connect(&ws_url).await;
     let (browser, mut handler) = match connect_result {
         Ok(pair) => pair,
         Err(e) => return Response::error(format!("connect failed: {e}")),
     };
     tokio::spawn(async move { while handler.next().await.is_some() {} });
 
-    // Pick up all existing pages from the connected browser.
     let pages_result = browser.pages().await;
     let pages = match pages_result {
         Ok(p) if !p.is_empty() => p,
-        Ok(_) => {
-            // No pages open — create a blank one.
-            match browser.new_blank_page().await {
-                Ok(p) => vec![p],
-                Err(e) => return Response::error(format!("connected but no pages: {e}")),
-            }
-        }
+        Ok(_) => match browser.new_blank_page().await {
+            Ok(p) => vec![p],
+            Err(e) => return Response::error(format!("connected but no pages: {e}")),
+        },
         Err(e) => return Response::error(format!("connected but failed to list pages: {e}")),
     };
 
@@ -689,12 +681,7 @@ async fn cmd_connect(state: &Arc<Mutex<DaemonState>>, target: &str) -> Response 
 }
 
 /// Resolve a CDP target string to a websocket URL.
-///
-/// Accepts:
-/// - A bare port number (e.g. `"9222"`) → fetches `http://127.0.0.1:9222/json/version`
-/// - An HTTP URL (e.g. `"http://127.0.0.1:9222"`) → fetches `/json/version`
-/// - A `ws://` or `wss://` URL → used directly
-async fn resolve_cdp_endpoint(target: &str) -> crate::Result<String> {
+async fn resolve_cdp_endpoint(target: &str) -> brother::Result<String> {
     if target.starts_with("ws://") || target.starts_with("wss://") {
         return Ok(target.to_string());
     }
@@ -726,11 +713,6 @@ async fn resolve_cdp_endpoint(target: &str) -> crate::Result<String> {
 }
 
 /// Switch execution context to a child frame.
-///
-/// The selector can be:
-/// - A numeric index (e.g. `"0"`) into the child frames list
-/// - A frame name (e.g. `"myframe"`)
-/// - A URL substring (e.g. `"ads.example.com"`)
 async fn cmd_frame(state: &Arc<Mutex<DaemonState>>, selector: &str) -> Response {
     use chromiumoxide::cdp::browser_protocol::page::GetFrameTreeParams;
 
@@ -739,7 +721,6 @@ async fn cmd_frame(state: &Arc<Mutex<DaemonState>>, selector: &str) -> Response 
         Err(r) => return r,
     };
 
-    // Get the frame tree from CDP.
     let tree_resp = match page.inner().execute(GetFrameTreeParams::default()).await {
         Ok(r) => r,
         Err(e) => return Response::error(format!("failed to get frame tree: {e}")),
@@ -752,7 +733,6 @@ async fn cmd_frame(state: &Arc<Mutex<DaemonState>>, selector: &str) -> Response 
         return Response::error("no child frames found on this page");
     }
 
-    // Try to match by index, name, or URL substring.
     let matched = selector.parse::<usize>().map_or_else(
         |_| {
             children.iter().find_map(|c| {
@@ -808,9 +788,6 @@ async fn cmd_main_frame(state: &Arc<Mutex<DaemonState>>) -> Response {
 }
 
 /// Add a network interception route.
-///
-/// Injects JS to monkey-patch `fetch` and `XMLHttpRequest` so requests
-/// matching the pattern are fulfilled with a custom response or aborted.
 async fn cmd_route(
     state: &Arc<Mutex<DaemonState>>,
     pattern: String,
@@ -824,7 +801,6 @@ async fn cmd_route(
         Err(r) => return r,
     };
 
-    // Store the route in daemon state.
     state.lock().await.routes.push(InterceptRoute {
         pattern: pattern.clone(),
         action,
@@ -833,7 +809,6 @@ async fn cmd_route(
         content_type: content_type.clone(),
     });
 
-    // Inject JS interception for this pattern.
     let js = if matches!(action, RouteAction::Abort) {
         format!(
             r"(() => {{
@@ -903,7 +878,6 @@ async fn cmd_unroute(state: &Arc<Mutex<DaemonState>>, pattern: &str) -> Response
     let removed = before - guard.routes.len();
     drop(guard);
 
-    // Remove matching routes from JS.
     let js = if pattern == "*" {
         "window.__brother_routes = []".to_owned()
     } else {
@@ -930,7 +904,6 @@ async fn cmd_requests(
         Err(r) => return r,
     };
 
-    // Enable request tracking if not already done.
     let init_js = r"(() => {
         if (!window.__brother_req_tracked) {
             window.__brother_req_tracked = true;
@@ -967,7 +940,6 @@ async fn cmd_requests(
         });
     }
 
-    // Drain JS-captured requests.
     let drain_js = r"(() => {
         const r = window.__brother_requests || [];
         window.__brother_requests = [];
@@ -1026,7 +998,7 @@ async fn cmd_set_download_path(state: &Arc<Mutex<DaemonState>>, path: &str) -> R
     })
 }
 
-/// List or clear download log. Currently lists files in the download directory.
+/// List or clear download log.
 async fn cmd_downloads(state: &Arc<Mutex<DaemonState>>, action: Option<&str>) -> Response {
     let guard = state.lock().await;
     let Some(ref dl_path) = guard.download_path else {
@@ -1043,7 +1015,6 @@ async fn cmd_downloads(state: &Arc<Mutex<DaemonState>>, action: Option<&str>) ->
         });
     }
 
-    // List files in the download directory.
     let entries: Vec<serde_json::Value> = match tokio::fs::read_dir(&dl_path).await {
         Ok(mut dir) => {
             let mut files = Vec::new();
@@ -1082,7 +1053,6 @@ async fn cmd_wait_for_download(
     let dl_dir = dl_path.clone();
     drop(guard);
 
-    // Snapshot existing files before waiting.
     let before: std::collections::HashSet<String> = match tokio::fs::read_dir(&dl_dir).await {
         Ok(mut dir) => {
             let mut set = std::collections::HashSet::new();
@@ -1094,7 +1064,6 @@ async fn cmd_wait_for_download(
         Err(e) => return Response::error(format!("read download dir: {e}")),
     };
 
-    // Poll for new files until timeout.
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
     loop {
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -1104,7 +1073,6 @@ async fn cmd_wait_for_download(
         if let Ok(mut dir) = tokio::fs::read_dir(&dl_dir).await {
             while let Ok(Some(entry)) = dir.next_entry().await {
                 let name = entry.file_name().to_string_lossy().to_string();
-                // Skip partial Chrome downloads.
                 if std::path::Path::new(&name)
                     .extension()
                     .is_some_and(|e| e == "crdownload" || e == "tmp")
@@ -1113,7 +1081,6 @@ async fn cmd_wait_for_download(
                 }
                 if !before.contains(&name) {
                     let src = std::path::Path::new(&dl_dir).join(&name);
-                    // Optionally copy to the requested path.
                     if let Some(dest) = save_path
                         && let Err(e) = tokio::fs::copy(&src, dest).await
                     {
@@ -1129,9 +1096,6 @@ async fn cmd_wait_for_download(
 }
 
 /// Wait for a network response matching a URL pattern and return its body.
-///
-/// Uses JS fetch/XHR interception to capture response bodies. The interception
-/// script stores the body in `window.__brother_response_capture`.
 async fn cmd_response_body(
     state: &Arc<Mutex<DaemonState>>,
     url_pattern: &str,
@@ -1142,7 +1106,6 @@ async fn cmd_response_body(
         Err(r) => return r,
     };
 
-    // Inject response capture hook.
     let pat_escaped = url_pattern.replace('\'', "\\'");
     let inject_js = format!(
         r"(() => {{
@@ -1168,7 +1131,6 @@ async fn cmd_response_body(
     );
     let _ = page.eval(&inject_js).await;
 
-    // Poll for captured response.
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
     loop {
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -1223,7 +1185,7 @@ async fn cmd_navigate(state: &Arc<Mutex<DaemonState>>, url: &str, wait: WaitStra
 
 async fn cmd_snapshot(
     state: &Arc<Mutex<DaemonState>>,
-    options: crate::snapshot::SnapshotOptions,
+    options: brother::SnapshotOptions,
 ) -> Response {
     let page = match get_page(state).await {
         Ok(p) => p,
@@ -1360,7 +1322,6 @@ async fn cmd_tab_close(state: &Arc<Mutex<DaemonState>>, index: Option<usize>) ->
         return Response::error("cannot close the last tab");
     }
     guard.pages.remove(idx);
-    // Adjust active_tab if needed
     if guard.active_tab >= guard.pages.len() {
         guard.active_tab = guard.pages.len() - 1;
     }
@@ -1373,7 +1334,7 @@ async fn cmd_tab_close(state: &Arc<Mutex<DaemonState>>, index: Option<usize>) ->
 // File helpers
 // ---------------------------------------------------------------------------
 
-async fn write_port_file(port: u16) -> crate::Result<()> {
+async fn write_port_file(port: u16) -> brother::Result<()> {
     let path = crate::protocol::port_file_path()
         .ok_or_else(|| Error::Browser("cannot determine data dir".into()))?;
     if let Some(parent) = path.parent() {
@@ -1388,7 +1349,7 @@ async fn write_port_file(port: u16) -> crate::Result<()> {
     Ok(())
 }
 
-async fn write_pid_file() -> crate::Result<()> {
+async fn write_pid_file() -> brother::Result<()> {
     let path = crate::protocol::pid_file_path()
         .ok_or_else(|| Error::Browser("cannot determine data dir".into()))?;
     tokio::fs::write(&path, std::process::id().to_string())

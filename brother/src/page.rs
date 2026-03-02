@@ -27,8 +27,34 @@ use serde::Serialize;
 use tokio::sync::Mutex;
 
 use crate::error::{Error, Result};
-use crate::protocol::{MouseButton, ScrollDirection};
 use crate::snapshot::{self, CursorItem, Ref, RefMap, Snapshot, SnapshotOptions};
+
+/// Direction for scroll operations.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrollDirection {
+    /// Scroll down (positive Y).
+    Down,
+    /// Scroll up (negative Y).
+    Up,
+    /// Scroll right (positive X).
+    Right,
+    /// Scroll left (negative X).
+    Left,
+}
+
+/// Mouse button for click and mouse commands.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MouseButton {
+    /// Left mouse button (default).
+    #[default]
+    Left,
+    /// Right mouse button.
+    Right,
+    /// Middle mouse button.
+    Middle,
+}
 
 /// A captured console message from the browser.
 #[derive(Debug, Clone, Serialize)]

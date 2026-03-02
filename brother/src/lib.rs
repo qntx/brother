@@ -27,17 +27,13 @@
 //! ```
 
 mod browser;
-pub mod client;
 mod config;
-pub mod daemon;
 mod error;
 mod page;
-pub mod protocol;
 mod snapshot;
 
 pub use browser::Browser;
 pub use config::BrowserConfig;
 pub use error::{Error, Result};
-pub use page::{ConsoleEntry, DialogInfo, JsError, Page};
-pub use protocol::{MouseButton, RouteAction, ScrollDirection};
+pub use page::{ConsoleEntry, DialogInfo, JsError, MouseButton, Page, ScrollDirection};
 pub use snapshot::{Ref, RefMap, Snapshot, SnapshotOptions};
