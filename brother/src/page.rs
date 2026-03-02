@@ -1073,51 +1073,47 @@ impl Page {
     /// Call a JS function on a target element and discard the result.
     async fn call_on_target(&self, target: &str, function: &str) -> Result<()> {
         let oid = self.resolve_target_object(target).await?;
-        self.inner
-            .evaluate_function(
-                CallFunctionOnParams::builder()
-                    .object_id(oid)
-                    .function_declaration(function)
-                    .build()
-                    .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?,
-            )
-            .await
-            .map_err(Error::Cdp)?;
+        let params = CallFunctionOnParams::builder()
+            .object_id(oid)
+            .function_declaration(function)
+            .build()
+            .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?;
+        self.inner.execute(params).await.map_err(Error::Cdp)?;
         Ok(())
     }
 
     /// Call a JS function on a target and return a boolean result.
     async fn call_bool_on_target(&self, target: &str, function: &str) -> Result<bool> {
         let oid = self.resolve_target_object(target).await?;
-        let result = self
-            .inner
-            .evaluate_function(
-                CallFunctionOnParams::builder()
-                    .object_id(oid)
-                    .function_declaration(function)
-                    .build()
-                    .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?,
-            )
-            .await
-            .map_err(Error::Cdp)?;
-        Ok(result.into_value::<bool>().unwrap_or(false))
+        let params = CallFunctionOnParams::builder()
+            .object_id(oid)
+            .function_declaration(function)
+            .build()
+            .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?;
+        let resp = self.inner.execute(params).await.map_err(Error::Cdp)?;
+        Ok(resp
+            .result
+            .result
+            .value
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false))
     }
 
     /// Call a JS function on a target and return the string result.
     async fn call_text_on_target(&self, target: &str, function: &str) -> Result<String> {
         let oid = self.resolve_target_object(target).await?;
-        let result = self
-            .inner
-            .evaluate_function(
-                CallFunctionOnParams::builder()
-                    .object_id(oid)
-                    .function_declaration(function)
-                    .build()
-                    .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?,
-            )
-            .await
-            .map_err(Error::Cdp)?;
-        Ok(result.into_value::<String>().unwrap_or_default())
+        let params = CallFunctionOnParams::builder()
+            .object_id(oid)
+            .function_declaration(function)
+            .build()
+            .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?;
+        let resp = self.inner.execute(params).await.map_err(Error::Cdp)?;
+        Ok(resp
+            .result
+            .result
+            .value
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default())
     }
 
     // -----------------------------------------------------------------------
@@ -1154,16 +1150,12 @@ impl Page {
             }
         }
         let oid = self.resolve_by_role_name(&r.role, &r.name, r.nth).await?;
-        self.inner
-            .evaluate_function(
-                CallFunctionOnParams::builder()
-                    .object_id(oid)
-                    .function_declaration("function() { this.focus(); }")
-                    .build()
-                    .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?,
-            )
-            .await
-            .map_err(Error::Cdp)?;
+        let params = CallFunctionOnParams::builder()
+            .object_id(oid)
+            .function_declaration("function() { this.focus(); }")
+            .build()
+            .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?;
+        self.inner.execute(params).await.map_err(Error::Cdp)?;
         Ok(())
     }
 
@@ -1256,24 +1248,21 @@ impl Page {
         &self,
         oid: chromiumoxide::cdp::js_protocol::runtime::RemoteObjectId,
     ) -> Result<Point> {
-        let result = self
-            .inner
-            .evaluate_function(
-                CallFunctionOnParams::builder()
-                    .object_id(oid)
-                    .function_declaration(
-                        "function(){const r=this.getBoundingClientRect();\
-                         return JSON.stringify({x:r.x+r.width/2,y:r.y+r.height/2})}",
-                    )
-                    .build()
-                    .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?,
+        let params = CallFunctionOnParams::builder()
+            .object_id(oid)
+            .function_declaration(
+                "function(){const r=this.getBoundingClientRect();\
+                 return JSON.stringify({x:r.x+r.width/2,y:r.y+r.height/2})}",
             )
-            .await
-            .map_err(Error::Cdp)?;
-
-        let s: String = result
-            .into_value()
-            .map_err(|_| Error::ElementNotFound("failed to get bounding rect".into()))?;
+            .build()
+            .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?;
+        let resp = self.inner.execute(params).await.map_err(Error::Cdp)?;
+        let s = resp
+            .result
+            .result
+            .value
+            .and_then(|v| v.as_str().map(String::from))
+            .ok_or_else(|| Error::ElementNotFound("failed to get bounding rect".into()))?;
         let v: serde_json::Value = serde_json::from_str(&s)?;
         Ok(Point {
             x: v["x"].as_f64().unwrap_or(0.0),

@@ -20,7 +20,7 @@ use crate::page::Page;
 use crate::protocol::{Request, Response, ResponseData, WaitCondition, WaitStrategy};
 
 /// Default idle timeout before auto-shutdown.
-const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_mins(5);
 
 /// Shared state across connections.
 struct DaemonState {

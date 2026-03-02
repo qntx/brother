@@ -167,8 +167,8 @@ enum Command {
         #[arg(short, long, default_value = "30000")]
         timeout: u64,
     },
-    /// Check element state: visible, enabled, checked, or count elements.
-    #[command(name = "check")]
+    /// Query element state: visible, enabled, checked, or count elements.
+    #[command(name = "query")]
     StateCheck {
         /// What to check: `visible`, `enabled`, `checked`, `count`.
         what: String,
