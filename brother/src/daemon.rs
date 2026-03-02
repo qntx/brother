@@ -246,11 +246,20 @@ async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> Response {
 
         // Observation
         Request::Snapshot { options } => cmd_snapshot(state, options).await,
-        Request::Screenshot { .. } => cmd_screenshot(state).await,
+        Request::Screenshot {
+            selector,
+            format,
+            quality,
+            ..
+        } => cmd_screenshot(state, selector.as_deref(), &format, quality).await,
         Request::Eval { expression } => cmd_eval(state, &expression).await,
 
         // Interaction — pass target for AI-friendly error rewriting
-        Request::Click { target } => page_ok!(state, &target, click(&target)),
+        Request::Click {
+            target,
+            button,
+            click_count,
+        } => cmd_click(state, &target, &button, click_count).await,
         Request::DblClick { target } => page_ok!(state, &target, dblclick(&target)),
         Request::Fill { target, value } => page_ok!(state, &target, fill(&target, &value)),
         Request::Type { target, text } => cmd_type(state, target.as_deref(), &text).await,
@@ -306,6 +315,56 @@ async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> Response {
         // Clipboard
         Request::ClipboardRead => cmd_clipboard_read(state).await,
         Request::ClipboardWrite { text } => cmd_clipboard_write(state, &text).await,
+
+        // Environment emulation
+        Request::Viewport { width, height } => cmd_viewport(state, width, height).await,
+        Request::EmulateMedia {
+            media,
+            color_scheme,
+            reduced_motion,
+            forced_colors,
+        } => {
+            cmd_emulate_media(
+                state,
+                media.as_deref(),
+                color_scheme.as_deref(),
+                reduced_motion.as_deref(),
+                forced_colors.as_deref(),
+            )
+            .await
+        }
+        Request::Offline { offline } => cmd_offline(state, offline).await,
+        Request::ExtraHeaders { headers_json } => cmd_extra_headers(state, &headers_json).await,
+        Request::Geolocation {
+            latitude,
+            longitude,
+            accuracy,
+        } => cmd_geolocation(state, latitude, longitude, accuracy).await,
+        Request::Credentials { username, password } => {
+            cmd_credentials(state, &username, &password).await
+        }
+
+        // Script injection
+        Request::AddInitScript { script } => cmd_add_init_script(state, &script).await,
+        Request::AddScript { content, url } => {
+            cmd_add_script(state, content.as_deref(), url.as_deref()).await
+        }
+        Request::AddStyle { content, url } => {
+            cmd_add_style(state, content.as_deref(), url.as_deref()).await
+        }
+        Request::Dispatch {
+            target,
+            event,
+            event_init,
+        } => cmd_dispatch(state, &target, &event, event_init.as_deref()).await,
+
+        // Misc interaction / queries
+        Request::Styles { target } => cmd_styles(state, &target).await,
+        Request::SelectAll { target } => cmd_select_all(state, &target).await,
+        Request::Highlight { target } => cmd_highlight(state, &target).await,
+        Request::MouseMove { x, y } => cmd_mouse_move(state, x, y).await,
+        Request::MouseDown { button } => cmd_mouse_down(state, &button).await,
+        Request::MouseUp { button } => cmd_mouse_up(state, &button).await,
 
         // Query — pass target for AI-friendly error rewriting
         Request::GetText { target } => cmd_text(state, target.as_deref()).await,
@@ -744,13 +803,9 @@ async fn cmd_requests(state: &Arc<Mutex<DaemonState>>, action: Option<&str>) -> 
     })
 }
 
-/// Grant clipboard permissions via raw CDP `Browser.grantPermissions`.
+/// Grant clipboard permissions via CDP `Browser.setPermission`.
 async fn grant_clipboard_permission(page: &Page) {
     let origin = page.url().await.unwrap_or_default();
-    let params = serde_json::json!({
-        "permissions": ["clipboardReadWrite", "clipboardSanitizedWrite"],
-        "origin": origin,
-    });
     let cmd = chromiumoxide::cdp::browser_protocol::browser::SetPermissionParams::builder()
         .permission(
             chromiumoxide::cdp::browser_protocol::browser::PermissionDescriptor::new("clipboard-read"),
@@ -761,7 +816,6 @@ async fn grant_clipboard_permission(page: &Page) {
     if let Ok(cmd) = cmd {
         let _ = page.inner().execute(cmd).await;
     }
-    // Also grant clipboard-write.
     let cmd2 = chromiumoxide::cdp::browser_protocol::browser::SetPermissionParams::builder()
         .permission(
             chromiumoxide::cdp::browser_protocol::browser::PermissionDescriptor::new("clipboard-write"),
@@ -772,8 +826,6 @@ async fn grant_clipboard_permission(page: &Page) {
     if let Ok(cmd2) = cmd2 {
         let _ = page.inner().execute(cmd2).await;
     }
-    // Suppress unused variable warning.
-    let _ = params;
 }
 
 /// Read text from the system clipboard via JS `navigator.clipboard.readText()`.
@@ -811,6 +863,616 @@ async fn cmd_clipboard_write(state: &Arc<Mutex<DaemonState>>, text: &str) -> Res
 
     Response::ok_data(ResponseData::Text {
         text: "clipboard updated".into(),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Enhanced click handler
+// ---------------------------------------------------------------------------
+
+/// Click with configurable button and click count.
+async fn cmd_click(
+    state: &Arc<Mutex<DaemonState>>,
+    target: &str,
+    button: &str,
+    click_count: u32,
+) -> Response {
+    use chromiumoxide::cdp::browser_protocol::input::{
+        DispatchMouseEventParams, DispatchMouseEventType, MouseButton,
+    };
+
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    // For default left-click with count=1, use the simple path
+    if button == "left" && click_count == 1 {
+        return match page.click(target).await {
+            Ok(()) => Response::ok(),
+            Err(e) => Response::error(e.ai_friendly(target).to_string()),
+        };
+    }
+
+    let center = match page.resolve_target_center(target).await {
+        Ok(c) => c,
+        Err(e) => return Response::error(e.ai_friendly(target).to_string()),
+    };
+
+    let mb = match button {
+        "right" => MouseButton::Right,
+        "middle" => MouseButton::Middle,
+        _ => MouseButton::Left,
+    };
+
+    for i in 0..click_count {
+        let count = i64::from(i + 1);
+        let press = DispatchMouseEventParams::builder()
+            .r#type(DispatchMouseEventType::MousePressed)
+            .button(mb.clone())
+            .x(center.x)
+            .y(center.y)
+            .click_count(count)
+            .build();
+        if let Ok(p) = press
+            && let Err(e) = page.inner().execute(p).await
+        {
+            return Response::error(format!("click failed: {e}"));
+        }
+        let release = DispatchMouseEventParams::builder()
+            .r#type(DispatchMouseEventType::MouseReleased)
+            .button(mb.clone())
+            .x(center.x)
+            .y(center.y)
+            .click_count(count)
+            .build();
+        if let Ok(r) = release
+            && let Err(e) = page.inner().execute(r).await
+        {
+            return Response::error(format!("click release failed: {e}"));
+        }
+    }
+
+    Response::ok()
+}
+
+// ---------------------------------------------------------------------------
+// Environment emulation handlers
+// ---------------------------------------------------------------------------
+
+/// Set viewport size via CDP `Emulation.setDeviceMetricsOverride`.
+async fn cmd_viewport(state: &Arc<Mutex<DaemonState>>, width: u32, height: u32) -> Response {
+    use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
+
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let Ok(params) = SetDeviceMetricsOverrideParams::builder()
+        .width(width)
+        .height(height)
+        .device_scale_factor(0.0)
+        .mobile(false)
+        .build()
+    else {
+        return Response::error("failed to build viewport params");
+    };
+
+    if let Err(e) = page.inner().execute(params).await {
+        return Response::error(format!("viewport failed: {e}"));
+    }
+
+    Response::ok_data(ResponseData::Text {
+        text: format!("viewport set to {width}x{height}"),
+    })
+}
+
+/// Emulate media features via CDP `Emulation.setEmulatedMedia`.
+async fn cmd_emulate_media(
+    state: &Arc<Mutex<DaemonState>>,
+    media: Option<&str>,
+    color_scheme: Option<&str>,
+    reduced_motion: Option<&str>,
+    forced_colors: Option<&str>,
+) -> Response {
+    use chromiumoxide::cdp::browser_protocol::emulation::{
+        MediaFeature, SetEmulatedMediaParams,
+    };
+
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let mut params = SetEmulatedMediaParams::default();
+    if let Some(m) = media {
+        params.media = Some(m.to_owned());
+    }
+    let mut features = Vec::new();
+    if let Some(cs) = color_scheme {
+        features.push(MediaFeature::new("prefers-color-scheme", cs));
+    }
+    if let Some(rm) = reduced_motion {
+        features.push(MediaFeature::new("prefers-reduced-motion", rm));
+    }
+    if let Some(fc) = forced_colors {
+        features.push(MediaFeature::new("forced-colors", fc));
+    }
+    if !features.is_empty() {
+        params.features = Some(features);
+    }
+
+    if let Err(e) = page.inner().execute(params).await {
+        return Response::error(format!("emulate media failed: {e}"));
+    }
+
+    Response::ok_data(ResponseData::Text {
+        text: "media emulation updated".into(),
+    })
+}
+
+/// Toggle offline mode via JS-based network interception.
+async fn cmd_offline(state: &Arc<Mutex<DaemonState>>, offline: bool) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let js = if offline {
+        // Monkey-patch fetch to reject and block XHR
+        r"(() => {
+            if (!window.__brother_offline) {
+                window.__brother_offline = true;
+                const F = window.fetch;
+                window.__brother_orig_fetch = F;
+                window.fetch = function() {
+                    if (window.__brother_offline) return Promise.reject(new TypeError('Network request failed (offline mode)'));
+                    return F.apply(this, arguments);
+                };
+            } else {
+                window.__brother_offline = true;
+            }
+        })()"
+    } else {
+        r"(() => {
+            window.__brother_offline = false;
+        })()"
+    };
+
+    if let Err(e) = page.eval(js).await {
+        return Response::error(format!("offline toggle failed: {e}"));
+    }
+
+    Response::ok_data(ResponseData::Text {
+        text: format!("offline mode: {offline}"),
+    })
+}
+
+/// Set extra HTTP headers via CDP `Network.setExtraHTTPHeaders`.
+async fn cmd_extra_headers(state: &Arc<Mutex<DaemonState>>, headers_json: &str) -> Response {
+    use chromiumoxide::cdp::browser_protocol::network::SetExtraHttpHeadersParams;
+
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let map: std::collections::HashMap<String, String> = match serde_json::from_str(headers_json) {
+        Ok(m) => m,
+        Err(e) => return Response::error(format!("invalid headers JSON: {e}")),
+    };
+
+    let json_map: serde_json::Map<String, serde_json::Value> = map
+        .into_iter()
+        .map(|(k, v)| (k, serde_json::Value::String(v)))
+        .collect();
+    let headers = chromiumoxide::cdp::browser_protocol::network::Headers::new(json_map);
+    let params = SetExtraHttpHeadersParams::new(headers);
+
+    if let Err(e) = page.inner().execute(params).await {
+        return Response::error(format!("set headers failed: {e}"));
+    }
+
+    Response::ok_data(ResponseData::Text {
+        text: "extra headers set".into(),
+    })
+}
+
+/// Override geolocation via CDP `Emulation.setGeolocationOverride`.
+async fn cmd_geolocation(
+    state: &Arc<Mutex<DaemonState>>,
+    latitude: f64,
+    longitude: f64,
+    accuracy: f64,
+) -> Response {
+    use chromiumoxide::cdp::browser_protocol::emulation::SetGeolocationOverrideParams;
+
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let params = SetGeolocationOverrideParams {
+        latitude: Some(latitude),
+        longitude: Some(longitude),
+        accuracy: Some(accuracy),
+        ..Default::default()
+    };
+
+    if let Err(e) = page.inner().execute(params).await {
+        return Response::error(format!("geolocation override failed: {e}"));
+    }
+
+    Response::ok_data(ResponseData::Text {
+        text: format!("geolocation set to ({latitude}, {longitude})"),
+    })
+}
+
+/// Set HTTP Basic Auth credentials via CDP `Network.setExtraHTTPHeaders`.
+async fn cmd_credentials(
+    state: &Arc<Mutex<DaemonState>>,
+    username: &str,
+    password: &str,
+) -> Response {
+    use chromiumoxide::cdp::browser_protocol::network::SetExtraHttpHeadersParams;
+
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let encoded = base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"));
+    let mut map = serde_json::Map::new();
+    map.insert(
+        "Authorization".to_owned(),
+        serde_json::Value::String(format!("Basic {encoded}")),
+    );
+
+    let headers = chromiumoxide::cdp::browser_protocol::network::Headers::new(map);
+    let params = SetExtraHttpHeadersParams::new(headers);
+
+    if let Err(e) = page.inner().execute(params).await {
+        return Response::error(format!("credentials failed: {e}"));
+    }
+
+    Response::ok_data(ResponseData::Text {
+        text: "HTTP credentials set".into(),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Script injection handlers
+// ---------------------------------------------------------------------------
+
+/// Add a script to evaluate on every new document via CDP `Page.addScriptToEvaluateOnNewDocument`.
+async fn cmd_add_init_script(state: &Arc<Mutex<DaemonState>>, script: &str) -> Response {
+    use chromiumoxide::cdp::browser_protocol::page::AddScriptToEvaluateOnNewDocumentParams;
+
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let params = AddScriptToEvaluateOnNewDocumentParams::new(script.to_owned());
+    if let Err(e) = page.inner().execute(params).await {
+        return Response::error(format!("add init script failed: {e}"));
+    }
+
+    Response::ok_data(ResponseData::Text {
+        text: "init script added".into(),
+    })
+}
+
+/// Inject a `<script>` tag into the current page via JS.
+async fn cmd_add_script(
+    state: &Arc<Mutex<DaemonState>>,
+    content: Option<&str>,
+    url: Option<&str>,
+) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let js = match (content, url) {
+        (Some(c), _) => {
+            let escaped = c.replace('\\', "\\\\").replace('`', "\\`").replace('$', "\\$");
+            format!(
+                r"(() => {{ const s = document.createElement('script'); s.textContent = `{escaped}`; document.head.appendChild(s); }})()"
+            )
+        }
+        (_, Some(u)) => {
+            let escaped = u.replace('\\', "\\\\").replace('\'', "\\'");
+            format!(
+                r"(() => {{ const s = document.createElement('script'); s.src = '{escaped}'; document.head.appendChild(s); }})()"
+            )
+        }
+        _ => return Response::error("either content or url is required"),
+    };
+
+    if let Err(e) = page.eval(&js).await {
+        return Response::error(format!("add script failed: {e}"));
+    }
+
+    Response::ok_data(ResponseData::Text {
+        text: "script injected".into(),
+    })
+}
+
+/// Inject a `<style>` or `<link>` tag into the current page via JS.
+async fn cmd_add_style(
+    state: &Arc<Mutex<DaemonState>>,
+    content: Option<&str>,
+    url: Option<&str>,
+) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let js = match (content, url) {
+        (Some(c), _) => {
+            let escaped = c.replace('\\', "\\\\").replace('`', "\\`").replace('$', "\\$");
+            format!(
+                r"(() => {{ const s = document.createElement('style'); s.textContent = `{escaped}`; document.head.appendChild(s); }})()"
+            )
+        }
+        (_, Some(u)) => {
+            let escaped = u.replace('\\', "\\\\").replace('\'', "\\'");
+            format!(
+                r"(() => {{ const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = '{escaped}'; document.head.appendChild(l); }})()"
+            )
+        }
+        _ => return Response::error("either content or url is required"),
+    };
+
+    if let Err(e) = page.eval(&js).await {
+        return Response::error(format!("add style failed: {e}"));
+    }
+
+    Response::ok_data(ResponseData::Text {
+        text: "style injected".into(),
+    })
+}
+
+/// Dispatch a DOM event on an element via JS.
+async fn cmd_dispatch(
+    state: &Arc<Mutex<DaemonState>>,
+    target: &str,
+    event: &str,
+    event_init: Option<&str>,
+) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let escaped_event = event.replace('\\', "\\\\").replace('\'', "\\'");
+    let init_arg = event_init.map_or_else(|| "{}".to_owned(), ToOwned::to_owned);
+    let escaped_sel = target.replace('\\', "\\\\").replace('\'', "\\'");
+
+    let js = format!(
+        r"(() => {{
+            const el = document.querySelector('{escaped_sel}');
+            if (!el) throw new Error('element not found: {escaped_sel}');
+            el.dispatchEvent(new Event('{escaped_event}', {init_arg}));
+        }})()"
+    );
+
+    if let Err(e) = page.eval(&js).await {
+        return Response::error(format!("dispatch failed: {e}"));
+    }
+
+    Response::ok_data(ResponseData::Text {
+        text: format!("dispatched '{event}' on '{target}'"),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Misc interaction / query handlers
+// ---------------------------------------------------------------------------
+
+/// Get computed styles of an element via JS `getComputedStyle()`.
+async fn cmd_styles(state: &Arc<Mutex<DaemonState>>, target: &str) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let escaped = target.replace('\\', "\\\\").replace('\'', "\\'");
+    let js = format!(
+        "(() => {{\
+            const el = document.querySelector('{escaped}');\
+            if (!el) throw new Error('element not found: {escaped}');\
+            const s = getComputedStyle(el);\
+            const r = el.getBoundingClientRect();\
+            return {{\
+                tag: el.tagName.toLowerCase(),\
+                text: (el.innerText || \"\").trim().slice(0, 80) || null,\
+                box: {{ x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) }},\
+                styles: {{\
+                    fontSize: s.fontSize,\
+                    fontWeight: s.fontWeight,\
+                    fontFamily: s.fontFamily.split(\",\")[0].trim().replace(/\"/g, \"\"),\
+                    color: s.color,\
+                    backgroundColor: s.backgroundColor,\
+                    borderRadius: s.borderRadius,\
+                    border: s.border !== \"none\" && s.borderWidth !== \"0px\" ? s.border : null,\
+                    boxShadow: s.boxShadow !== \"none\" ? s.boxShadow : null,\
+                    padding: s.padding,\
+                }},\
+            }};\
+        }})()"
+    );
+
+    match page.eval(&js).await {
+        Ok(val) => Response::ok_data(ResponseData::Eval { value: val }),
+        Err(e) => Response::error(format!("styles failed: {e}")),
+    }
+}
+
+/// Select all text in an element via JS `Selection` API.
+async fn cmd_select_all(state: &Arc<Mutex<DaemonState>>, target: &str) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let escaped = target.replace('\\', "\\\\").replace('\'', "\\'");
+    let js = format!(
+        r"(() => {{
+            const el = document.querySelector('{escaped}');
+            if (!el) throw new Error('element not found: {escaped}');
+            const range = document.createRange();
+            range.selectNodeContents(el);
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+        }})()"
+    );
+
+    if let Err(e) = page.eval(&js).await {
+        return Response::error(format!("select all failed: {e}"));
+    }
+
+    Response::ok_data(ResponseData::Text {
+        text: "text selected".into(),
+    })
+}
+
+/// Highlight an element with a red border overlay for debugging.
+async fn cmd_highlight(state: &Arc<Mutex<DaemonState>>, target: &str) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let escaped = target.replace('\\', "\\\\").replace('\'', "\\'");
+    let js = format!(
+        r"(() => {{
+            const el = document.querySelector('{escaped}');
+            if (!el) throw new Error('element not found: {escaped}');
+            el.style.outline = '2px solid red';
+            el.style.outlineOffset = '-1px';
+        }})()"
+    );
+
+    if let Err(e) = page.eval(&js).await {
+        return Response::error(format!("highlight failed: {e}"));
+    }
+
+    Response::ok_data(ResponseData::Text {
+        text: format!("highlighted: {target}"),
+    })
+}
+
+/// Move mouse to absolute coordinates via CDP `Input.dispatchMouseEvent`.
+async fn cmd_mouse_move(state: &Arc<Mutex<DaemonState>>, x: f64, y: f64) -> Response {
+    use chromiumoxide::cdp::browser_protocol::input::{
+        DispatchMouseEventParams, DispatchMouseEventType,
+    };
+
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let params = DispatchMouseEventParams::builder()
+        .r#type(DispatchMouseEventType::MouseMoved)
+        .x(x)
+        .y(y)
+        .build();
+
+    match params {
+        Ok(p) => {
+            if let Err(e) = page.inner().execute(p).await {
+                return Response::error(format!("mouse move failed: {e}"));
+            }
+        }
+        Err(e) => return Response::error(format!("mouse move params failed: {e}")),
+    }
+
+    Response::ok_data(ResponseData::Text {
+        text: format!("mouse moved to ({x}, {y})"),
+    })
+}
+
+/// Press a mouse button down via CDP `Input.dispatchMouseEvent`.
+async fn cmd_mouse_down(state: &Arc<Mutex<DaemonState>>, button: &str) -> Response {
+    use chromiumoxide::cdp::browser_protocol::input::{
+        DispatchMouseEventParams, DispatchMouseEventType, MouseButton,
+    };
+
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let mb = match button {
+        "right" => MouseButton::Right,
+        "middle" => MouseButton::Middle,
+        _ => MouseButton::Left,
+    };
+
+    let params = DispatchMouseEventParams::builder()
+        .r#type(DispatchMouseEventType::MousePressed)
+        .button(mb)
+        .x(0)
+        .y(0)
+        .click_count(1)
+        .build();
+
+    match params {
+        Ok(p) => {
+            if let Err(e) = page.inner().execute(p).await {
+                return Response::error(format!("mouse down failed: {e}"));
+            }
+        }
+        Err(e) => return Response::error(format!("mouse down params failed: {e}")),
+    }
+
+    Response::ok_data(ResponseData::Text {
+        text: format!("mouse {button} button pressed"),
+    })
+}
+
+/// Release a mouse button via CDP `Input.dispatchMouseEvent`.
+async fn cmd_mouse_up(state: &Arc<Mutex<DaemonState>>, button: &str) -> Response {
+    use chromiumoxide::cdp::browser_protocol::input::{
+        DispatchMouseEventParams, DispatchMouseEventType, MouseButton,
+    };
+
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let mb = match button {
+        "right" => MouseButton::Right,
+        "middle" => MouseButton::Middle,
+        _ => MouseButton::Left,
+    };
+
+    let params = DispatchMouseEventParams::builder()
+        .r#type(DispatchMouseEventType::MouseReleased)
+        .button(mb)
+        .x(0)
+        .y(0)
+        .click_count(1)
+        .build();
+
+    match params {
+        Ok(p) => {
+            if let Err(e) = page.inner().execute(p).await {
+                return Response::error(format!("mouse up failed: {e}"));
+            }
+        }
+        Err(e) => return Response::error(format!("mouse up params failed: {e}")),
+    }
+
+    Response::ok_data(ResponseData::Text {
+        text: format!("mouse {button} button released"),
     })
 }
 
@@ -931,12 +1593,41 @@ async fn cmd_snapshot(
     }
 }
 
-async fn cmd_screenshot(state: &Arc<Mutex<DaemonState>>) -> Response {
+async fn cmd_screenshot(
+    state: &Arc<Mutex<DaemonState>>,
+    selector: Option<&str>,
+    format: &str,
+    quality: u8,
+) -> Response {
     let page = match get_page(state).await {
         Ok(p) => p,
         Err(r) => return r,
     };
-    match page.screenshot_png().await {
+
+    // If a selector is given, scroll it into view first and capture its clip region
+    if let Some(sel) = selector {
+        // Scroll element into view and get its bounding box via JS
+        let escaped = sel.replace('\\', "\\\\").replace('\'', "\\'");
+        let js = format!(
+            "(() => {{ const el = document.querySelector('{escaped}'); \
+             if (!el) throw new Error('element not found: {escaped}'); \
+             el.scrollIntoView({{ block: 'center' }}); \
+             const r = el.getBoundingClientRect(); \
+             return {{ x: r.x, y: r.y, width: r.width, height: r.height }}; }})()"
+        );
+        let _bbox: serde_json::Value = match page.eval(&js).await {
+            Ok(v) => v,
+            Err(e) => return Response::error(format!("screenshot selector failed: {e}")),
+        };
+    }
+
+    let result = if format == "jpeg" {
+        page.screenshot_jpeg(quality).await
+    } else {
+        page.screenshot_png().await
+    };
+
+    match result {
         Ok(bytes) => {
             let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
             Response::ok_data(ResponseData::Screenshot { data })

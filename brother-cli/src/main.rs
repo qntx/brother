@@ -61,6 +61,12 @@ enum Command {
     Click {
         /// Ref or CSS selector.
         target: String,
+        /// Mouse button: `left`, `right`, `middle`.
+        #[arg(short, long, default_value = "left")]
+        button: String,
+        /// Number of clicks (use 2 for double-click).
+        #[arg(short = 'n', long, default_value = "1")]
+        click_count: u32,
     },
     /// Double-click an element.
     Dblclick {
@@ -193,6 +199,15 @@ enum Command {
         /// Output file path.
         #[arg(short, long, default_value = "screenshot.png")]
         output: String,
+        /// CSS selector to screenshot a specific element.
+        #[arg(short, long)]
+        selector: Option<String>,
+        /// Image format: `png` or `jpeg`.
+        #[arg(short, long, default_value = "png")]
+        format: String,
+        /// JPEG quality (1-100).
+        #[arg(short, long, default_value = "80")]
+        quality: u8,
     },
     /// Evaluate a `JavaScript` expression.
     Eval {
@@ -243,6 +258,122 @@ enum Command {
         what: String,
         /// Ref or CSS selector.
         target: String,
+    },
+    /// Set viewport size.
+    Viewport {
+        /// Width in pixels.
+        width: u32,
+        /// Height in pixels.
+        height: u32,
+    },
+    /// Emulate media features (color scheme, print, reduced motion, forced colors).
+    EmulateMedia {
+        /// Media type: `screen`, `print`.
+        #[arg(short, long)]
+        media: Option<String>,
+        /// Color scheme: `light`, `dark`, `no-preference`.
+        #[arg(short, long)]
+        color_scheme: Option<String>,
+        /// Reduced motion: `reduce`, `no-preference`.
+        #[arg(short, long)]
+        reduced_motion: Option<String>,
+        /// Forced colors: `active`, `none`.
+        #[arg(short, long)]
+        forced_colors: Option<String>,
+    },
+    /// Toggle offline mode.
+    Offline {
+        /// `true` or `false`.
+        offline: bool,
+    },
+    /// Set extra HTTP headers (JSON string).
+    ExtraHeaders {
+        /// JSON object, e.g. `{"X-Custom": "value"}`.
+        headers_json: String,
+    },
+    /// Override geolocation.
+    Geolocation {
+        /// Latitude.
+        latitude: f64,
+        /// Longitude.
+        longitude: f64,
+        /// Accuracy in meters.
+        #[arg(short, long, default_value = "1.0")]
+        accuracy: f64,
+    },
+    /// Set HTTP Basic Auth credentials.
+    Credentials {
+        /// Username.
+        username: String,
+        /// Password.
+        password: String,
+    },
+    /// Get computed styles of an element.
+    Styles {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Select all text in an element.
+    SelectAll {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Highlight an element with a red border (for debugging).
+    Highlight {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Move the mouse to absolute coordinates.
+    MouseMove {
+        /// X coordinate.
+        x: f64,
+        /// Y coordinate.
+        y: f64,
+    },
+    /// Press a mouse button down.
+    MouseDown {
+        /// Button: `left`, `right`, `middle`.
+        #[arg(short, long, default_value = "left")]
+        button: String,
+    },
+    /// Release a mouse button.
+    MouseUp {
+        /// Button: `left`, `right`, `middle`.
+        #[arg(short, long, default_value = "left")]
+        button: String,
+    },
+    /// Add a script to run on every new document (before page JS).
+    AddInitScript {
+        /// `JavaScript` source code.
+        script: String,
+    },
+    /// Inject a `<script>` tag into the current page.
+    AddScript {
+        /// Inline JS content.
+        #[arg(short, long)]
+        content: Option<String>,
+        /// External script URL.
+        #[arg(short, long)]
+        url: Option<String>,
+    },
+    /// Inject a `<style>` or `<link>` tag into the current page.
+    AddStyle {
+        /// Inline CSS content.
+        #[arg(short, long)]
+        content: Option<String>,
+        /// External stylesheet URL.
+        #[arg(short, long)]
+        url: Option<String>,
+    },
+    /// Dispatch a DOM event on an element.
+    Dispatch {
+        /// Ref or CSS selector.
+        target: String,
+        /// Event name (e.g. `click`, `input`, `change`).
+        event: String,
+        /// Optional JSON `EventInit` (e.g. `{"bubbles":true}`).
+        #[arg(short, long)]
+        init: Option<String>,
     },
     /// Read text from the clipboard.
     ClipboardRead,
@@ -405,8 +536,14 @@ fn build_request(cmd: &Command) -> Request {
             }
             Request::Snapshot { options: opts }
         }
-        Command::Click { target } => Request::Click {
+        Command::Click {
+            target,
+            button,
+            click_count,
+        } => Request::Click {
             target: target.clone(),
+            button: button.clone(),
+            click_count: *click_count,
         },
         Command::Dblclick { target } => Request::DblClick {
             target: target.clone(),
@@ -471,7 +608,17 @@ fn build_request(cmd: &Command) -> Request {
         },
         Command::SetContent { html } => Request::SetContent { html: html.clone() },
         Command::Pdf { path } => Request::Pdf { path: path.clone() },
-        Command::Screenshot { .. } => Request::Screenshot { full_page: false },
+        Command::Screenshot {
+            selector,
+            format,
+            quality,
+            ..
+        } => Request::Screenshot {
+            full_page: false,
+            selector: selector.clone(),
+            format: format.clone(),
+            quality: *quality,
+        },
         Command::Eval { expression } => Request::Eval {
             expression: expression.clone(),
         },
@@ -496,6 +643,74 @@ fn build_request(cmd: &Command) -> Request {
             function.as_deref(),
             *timeout,
         ),
+        Command::Viewport { width, height } => Request::Viewport {
+            width: *width,
+            height: *height,
+        },
+        Command::EmulateMedia {
+            media,
+            color_scheme,
+            reduced_motion,
+            forced_colors,
+        } => Request::EmulateMedia {
+            media: media.clone(),
+            color_scheme: color_scheme.clone(),
+            reduced_motion: reduced_motion.clone(),
+            forced_colors: forced_colors.clone(),
+        },
+        Command::Offline { offline } => Request::Offline { offline: *offline },
+        Command::ExtraHeaders { headers_json } => Request::ExtraHeaders {
+            headers_json: headers_json.clone(),
+        },
+        Command::Geolocation {
+            latitude,
+            longitude,
+            accuracy,
+        } => Request::Geolocation {
+            latitude: *latitude,
+            longitude: *longitude,
+            accuracy: *accuracy,
+        },
+        Command::Credentials { username, password } => Request::Credentials {
+            username: username.clone(),
+            password: password.clone(),
+        },
+        Command::Styles { target } => Request::Styles {
+            target: target.clone(),
+        },
+        Command::SelectAll { target } => Request::SelectAll {
+            target: target.clone(),
+        },
+        Command::Highlight { target } => Request::Highlight {
+            target: target.clone(),
+        },
+        Command::MouseMove { x, y } => Request::MouseMove { x: *x, y: *y },
+        Command::MouseDown { button } => Request::MouseDown {
+            button: button.clone(),
+        },
+        Command::MouseUp { button } => Request::MouseUp {
+            button: button.clone(),
+        },
+        Command::AddInitScript { script } => Request::AddInitScript {
+            script: script.clone(),
+        },
+        Command::AddScript { content, url } => Request::AddScript {
+            content: content.clone(),
+            url: url.clone(),
+        },
+        Command::AddStyle { content, url } => Request::AddStyle {
+            content: content.clone(),
+            url: url.clone(),
+        },
+        Command::Dispatch {
+            target,
+            event,
+            init,
+        } => Request::Dispatch {
+            target: target.clone(),
+            event: event.clone(),
+            event_init: init.clone(),
+        },
         Command::ClipboardRead => Request::ClipboardRead,
         Command::ClipboardWrite { text } => Request::ClipboardWrite { text: text.clone() },
         Command::SetDownloadPath { path } => Request::SetDownloadPath {
@@ -716,7 +931,7 @@ fn print_plain(cmd: &Command, data: Option<&ResponseData>) {
         }
         Some(ResponseData::Snapshot { tree, .. }) => println!("{tree}"),
         Some(ResponseData::Screenshot { data }) => {
-            if let Command::Screenshot { output } = cmd {
+            if let Command::Screenshot { output, .. } = cmd {
                 match base64::engine::general_purpose::STANDARD.decode(data) {
                     Ok(bytes) => {
                         if let Err(e) = std::fs::write(output, &bytes) {

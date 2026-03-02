@@ -1253,7 +1253,11 @@ impl Page {
     }
 
     /// Resolve any target to its center point for click/hover.
-    async fn resolve_target_center(&self, target: &str) -> Result<Point> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the element is not found.
+    pub async fn resolve_target_center(&self, target: &str) -> Result<Point> {
         let oid = self.resolve_target_object(target).await?;
         self.get_center_from_object(oid).await
     }

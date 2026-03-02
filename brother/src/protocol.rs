@@ -46,11 +46,20 @@ pub enum Request {
         #[serde(default)]
         options: SnapshotOptions,
     },
-    /// Take a screenshot (base64-encoded PNG).
+    /// Take a screenshot (base64-encoded image).
     Screenshot {
         /// Capture the full scrollable page.
         #[serde(default)]
         full_page: bool,
+        /// Optional CSS selector to screenshot a specific element.
+        #[serde(default)]
+        selector: Option<String>,
+        /// Image format: `"png"` or `"jpeg"` (default `"png"`).
+        #[serde(default = "default_screenshot_format")]
+        format: String,
+        /// JPEG quality (1-100, only for jpeg format).
+        #[serde(default = "default_jpeg_quality")]
+        quality: u8,
     },
     /// Evaluate `JavaScript` and return the result.
     Eval {
@@ -63,6 +72,12 @@ pub enum Request {
     Click {
         /// Ref or CSS selector.
         target: String,
+        /// Mouse button: `"left"`, `"right"`, `"middle"` (default `"left"`).
+        #[serde(default = "default_mouse_button")]
+        button: String,
+        /// Number of clicks (default 1, use 2 for double-click).
+        #[serde(default = "default_click_count")]
+        click_count: u32,
     },
     /// Double-click an element.
     DblClick {
@@ -245,6 +260,128 @@ pub enum Request {
         text: String,
     },
 
+    // -- Environment emulation -----------------------------------------------
+    /// Set the viewport size.
+    Viewport {
+        /// Width in pixels.
+        width: u32,
+        /// Height in pixels.
+        height: u32,
+    },
+    /// Emulate media features (color scheme, print/screen, reduced motion, etc.).
+    EmulateMedia {
+        /// Media type: `"screen"`, `"print"`, or empty to reset.
+        #[serde(default)]
+        media: Option<String>,
+        /// Color scheme: `"light"`, `"dark"`, `"no-preference"`, or empty to reset.
+        #[serde(default)]
+        color_scheme: Option<String>,
+        /// Reduced motion: `"reduce"`, `"no-preference"`, or empty to reset.
+        #[serde(default)]
+        reduced_motion: Option<String>,
+        /// Forced colors: `"active"`, `"none"`, or empty to reset.
+        #[serde(default)]
+        forced_colors: Option<String>,
+    },
+    /// Toggle offline mode.
+    Offline {
+        /// `true` = offline, `false` = online.
+        offline: bool,
+    },
+    /// Set extra HTTP headers for all subsequent requests.
+    ExtraHeaders {
+        /// Header name-value pairs as JSON string (e.g. `{"X-Custom": "val"}`).
+        headers_json: String,
+    },
+    /// Override geolocation.
+    Geolocation {
+        /// Latitude.
+        latitude: f64,
+        /// Longitude.
+        longitude: f64,
+        /// Accuracy in meters (default 1.0).
+        #[serde(default = "default_geo_accuracy")]
+        accuracy: f64,
+    },
+    /// Set HTTP Basic Auth credentials.
+    Credentials {
+        /// Username.
+        username: String,
+        /// Password.
+        password: String,
+    },
+
+    // -- Script injection ----------------------------------------------------
+    /// Add a script to evaluate on every new document (before page JS runs).
+    AddInitScript {
+        /// `JavaScript` source code.
+        script: String,
+    },
+    /// Inject a `<script>` tag into the current page.
+    AddScript {
+        /// Inline JS content (mutually exclusive with `url`).
+        #[serde(default)]
+        content: Option<String>,
+        /// External script URL (mutually exclusive with `content`).
+        #[serde(default)]
+        url: Option<String>,
+    },
+    /// Inject a `<style>` or `<link>` tag into the current page.
+    AddStyle {
+        /// Inline CSS content (mutually exclusive with `url`).
+        #[serde(default)]
+        content: Option<String>,
+        /// External stylesheet URL (mutually exclusive with `content`).
+        #[serde(default)]
+        url: Option<String>,
+    },
+    /// Dispatch a DOM event on an element.
+    Dispatch {
+        /// Ref or CSS selector.
+        target: String,
+        /// Event name (e.g. `"click"`, `"input"`, `"change"`).
+        event: String,
+        /// Optional JSON object for `EventInit` properties.
+        #[serde(default)]
+        event_init: Option<String>,
+    },
+
+    // -- Misc interaction / queries ------------------------------------------
+    /// Get computed styles of an element.
+    Styles {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Select all text in an element.
+    SelectAll {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Highlight an element with a visible overlay (for debugging).
+    Highlight {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Move the mouse to absolute coordinates.
+    MouseMove {
+        /// X coordinate.
+        x: f64,
+        /// Y coordinate.
+        y: f64,
+    },
+    /// Press a mouse button down at the current position.
+    MouseDown {
+        /// Button: `"left"`, `"right"`, `"middle"` (default `"left"`).
+        #[serde(default = "default_mouse_button")]
+        button: String,
+    },
+    /// Release a mouse button at the current position.
+    MouseUp {
+        /// Button: `"left"`, `"right"`, `"middle"` (default `"left"`).
+        #[serde(default = "default_mouse_button")]
+        button: String,
+    },
+
     // -- Query -------------------------------------------------------------
     /// Get text content (whole page or scoped by target).
     GetText {
@@ -409,6 +546,31 @@ const fn default_status() -> u16 {
 /// Default content type for route fulfill.
 fn default_content_type() -> String {
     "text/plain".into()
+}
+
+/// Default geolocation accuracy in meters.
+const fn default_geo_accuracy() -> f64 {
+    1.0
+}
+
+/// Default mouse button.
+fn default_mouse_button() -> String {
+    "left".into()
+}
+
+/// Default click count.
+const fn default_click_count() -> u32 {
+    1
+}
+
+/// Default screenshot format.
+fn default_screenshot_format() -> String {
+    "png".into()
+}
+
+/// Default JPEG quality.
+const fn default_jpeg_quality() -> u8 {
+    80
 }
 
 // ---------------------------------------------------------------------------
