@@ -127,6 +127,124 @@ pub enum Request {
         target: Option<String>,
     },
 
+    // -- Frame (iframe) support ---------------------------------------------
+    /// Switch execution context to a child frame by name, URL substring, or index.
+    Frame {
+        /// Frame selector: name, URL substring, or numeric index.
+        selector: String,
+    },
+    /// Switch back to the main (top-level) frame.
+    MainFrame,
+
+    // -- Raw keyboard ------------------------------------------------------
+    /// Hold a key down (without releasing).
+    KeyDown {
+        /// Key name (e.g. `"Shift"`, `"a"`).
+        key: String,
+    },
+    /// Release a held key.
+    KeyUp {
+        /// Key name (e.g. `"Shift"`, `"a"`).
+        key: String,
+    },
+    /// Insert text directly (without key events).
+    InsertText {
+        /// Text to insert.
+        text: String,
+    },
+
+    // -- File / DOM manipulation -------------------------------------------
+    /// Upload files to a file input element.
+    Upload {
+        /// Ref or CSS selector of the `<input type="file">`.
+        target: String,
+        /// File paths to upload.
+        files: Vec<String>,
+    },
+    /// Drag one element onto another.
+    Drag {
+        /// Ref or CSS selector of the source element.
+        source: String,
+        /// Ref or CSS selector of the drop target.
+        target: String,
+    },
+    /// Clear an input field.
+    Clear {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Scroll an element into the visible viewport.
+    ScrollIntoView {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Get the bounding box of an element.
+    BoundingBox {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Set the page HTML content directly.
+    SetContent {
+        /// HTML content.
+        html: String,
+    },
+    /// Export the page as PDF (headless only).
+    Pdf {
+        /// Output file path.
+        path: String,
+    },
+
+    // -- Network interception -----------------------------------------------
+    /// Intercept requests matching a URL pattern and respond with custom data or block.
+    Route {
+        /// URL substring to match.
+        pattern: String,
+        /// Action: `"fulfill"` (custom response) or `"abort"` (block).
+        action: String,
+        /// HTTP status code (for fulfill).
+        #[serde(default = "default_status")]
+        status: u16,
+        /// Response body (for fulfill).
+        #[serde(default)]
+        body: String,
+        /// Content-Type header (for fulfill).
+        #[serde(default = "default_content_type")]
+        content_type: String,
+    },
+    /// Remove a route by URL pattern. Pass `"*"` to remove all routes.
+    Unroute {
+        /// URL pattern to unroute.
+        pattern: String,
+    },
+    /// List captured network requests (drains the buffer). Pass `"clear"` to just clear.
+    Requests {
+        /// Optional action: `"clear"` to clear without returning.
+        #[serde(default)]
+        action: Option<String>,
+    },
+
+    // -- Download handling ---------------------------------------------------
+    /// Set the download directory path (enables downloads).
+    SetDownloadPath {
+        /// Absolute directory path for downloads.
+        path: String,
+    },
+    /// List recent downloads or clear the download log.
+    Downloads {
+        /// Optional action: `"clear"` to clear the log.
+        #[serde(default)]
+        action: Option<String>,
+    },
+
+    // -- Clipboard -----------------------------------------------------------
+    /// Read text from the clipboard.
+    ClipboardRead,
+    /// Write text to the clipboard.
+    ClipboardWrite {
+        /// Text to write.
+        text: String,
+    },
+
     // -- Query -------------------------------------------------------------
     /// Get text content (whole page or scoped by target).
     GetText {
@@ -281,6 +399,16 @@ pub enum ScrollDirection {
 /// Default scroll distance in pixels.
 const fn default_scroll_px() -> i64 {
     500
+}
+
+/// Default HTTP status for route fulfill.
+const fn default_status() -> u16 {
+    200
+}
+
+/// Default content type for route fulfill.
+fn default_content_type() -> String {
+    "text/plain".into()
 }
 
 // ---------------------------------------------------------------------------
@@ -443,6 +571,17 @@ pub enum ResponseData {
     Logs {
         /// Serialized log entries.
         entries: serde_json::Value,
+    },
+    /// Element bounding box.
+    BoundingBox {
+        /// X coordinate.
+        x: f64,
+        /// Y coordinate.
+        y: f64,
+        /// Width.
+        width: f64,
+        /// Height.
+        height: f64,
     },
     /// Tab list result.
     TabList {

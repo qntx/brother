@@ -29,7 +29,25 @@ struct DaemonState {
     pages: Vec<Page>,
     /// Index into `pages` for the currently active tab.
     active_tab: usize,
+    /// Currently active frame (None = main frame).
+    active_frame_id: Option<String>,
+    /// Network interception rules: pattern → (action, status, body, `content_type`).
+    routes: Vec<InterceptRoute>,
+    /// Captured network requests (from JS interception).
+    captured_requests: Vec<serde_json::Value>,
+    /// Download directory path.
+    download_path: Option<String>,
     last_activity: tokio::time::Instant,
+}
+
+/// A network interception rule.
+#[allow(dead_code)]
+struct InterceptRoute {
+    pattern: String,
+    action: String,
+    status: u16,
+    body: String,
+    content_type: String,
 }
 
 /// Run the daemon server.
@@ -55,6 +73,10 @@ pub async fn run(idle_timeout: Option<Duration>) -> crate::Result<()> {
         browser: None,
         pages: Vec::new(),
         active_tab: 0,
+        active_frame_id: None,
+        routes: Vec::new(),
+        captured_requests: Vec::new(),
+        download_path: None,
         last_activity: tokio::time::Instant::now(),
     }));
 
@@ -246,6 +268,45 @@ async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> Response {
             target,
         } => page_ok!(state, scroll(direction, pixels, target.as_deref())),
 
+        // Frame (iframe) support
+        Request::Frame { selector } => cmd_frame(state, &selector).await,
+        Request::MainFrame => cmd_main_frame(state).await,
+
+        // Raw keyboard
+        Request::KeyDown { key } => page_ok!(state, key_down(&key)),
+        Request::KeyUp { key } => page_ok!(state, key_up(&key)),
+        Request::InsertText { text } => page_ok!(state, insert_text(&text)),
+
+        // File / DOM manipulation
+        Request::Upload { target, files } => page_ok!(state, &target, upload(&target, &files)),
+        Request::Drag { source, target } => page_ok!(state, &source, drag(&source, &target)),
+        Request::Clear { target } => page_ok!(state, &target, clear(&target)),
+        Request::ScrollIntoView { target } => {
+            page_ok!(state, &target, scroll_into_view(&target))
+        }
+        Request::BoundingBox { target } => cmd_bounding_box(state, &target).await,
+        Request::SetContent { html } => page_ok!(state, set_content(&html)),
+        Request::Pdf { path } => page_ok!(state, pdf(&path)),
+
+        // Network interception
+        Request::Route {
+            pattern,
+            action,
+            status,
+            body,
+            content_type,
+        } => cmd_route(state, pattern, action, status, body, content_type).await,
+        Request::Unroute { pattern } => cmd_unroute(state, &pattern).await,
+        Request::Requests { action } => cmd_requests(state, action.as_deref()).await,
+
+        // Download handling
+        Request::SetDownloadPath { path } => cmd_set_download_path(state, &path).await,
+        Request::Downloads { action } => cmd_downloads(state, action.as_deref()).await,
+
+        // Clipboard
+        Request::ClipboardRead => cmd_clipboard_read(state).await,
+        Request::ClipboardWrite { text } => cmd_clipboard_write(state, &text).await,
+
         // Query — pass target for AI-friendly error rewriting
         Request::GetText { target } => cmd_text(state, target.as_deref()).await,
         Request::GetUrl => page_text!(state, url()),
@@ -406,6 +467,417 @@ async fn resolve_cdp_endpoint(target: &str) -> crate::Result<String> {
                 "webSocketDebuggerUrl not found in /json/version response".into(),
             )
         })
+}
+
+/// Get bounding box of an element.
+async fn cmd_bounding_box(state: &Arc<Mutex<DaemonState>>, target: &str) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    match page.bounding_box(target).await {
+        Ok((x, y, w, h)) => Response::ok_data(ResponseData::BoundingBox {
+            x,
+            y,
+            width: w,
+            height: h,
+        }),
+        Err(e) => Response::error(format!("{}", e.ai_friendly(target))),
+    }
+}
+
+/// Switch execution context to a child frame.
+///
+/// The selector can be:
+/// - A numeric index (e.g. `"0"`) into the child frames list
+/// - A frame name (e.g. `"myframe"`)
+/// - A URL substring (e.g. `"ads.example.com"`)
+async fn cmd_frame(state: &Arc<Mutex<DaemonState>>, selector: &str) -> Response {
+    use chromiumoxide::cdp::browser_protocol::page::GetFrameTreeParams;
+
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    // Get the frame tree from CDP.
+    let tree_resp = match page.inner().execute(GetFrameTreeParams::default()).await {
+        Ok(r) => r,
+        Err(e) => return Response::error(format!("failed to get frame tree: {e}")),
+    };
+
+    let root = &tree_resp.result.frame_tree;
+    let children = root.child_frames.as_deref().unwrap_or_default();
+
+    if children.is_empty() {
+        return Response::error("no child frames found on this page");
+    }
+
+    // Try to match by index, name, or URL substring.
+    let matched = selector.parse::<usize>().map_or_else(
+        |_| {
+            children.iter().find_map(|c| {
+                let f = &c.frame;
+                let name_match = f.name.as_deref().is_some_and(|n| n == selector);
+                let url_match = f.url.contains(selector);
+                (name_match || url_match).then_some(f)
+            })
+        },
+        |idx| children.get(idx).map(|c| &c.frame),
+    );
+
+    let Some(frame) = matched else {
+        let available: Vec<String> = children
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let name = c.frame.name.as_deref().unwrap_or("(unnamed)");
+                format!("[{i}] name={name} url={}", c.frame.url)
+            })
+            .collect();
+        return Response::error(format!(
+            "frame \"{selector}\" not found. Available frames:\n{}",
+            available.join("\n")
+        ));
+    };
+
+    let frame_id = frame.id.inner().to_owned();
+    let frame_name = frame.name.as_deref().unwrap_or("(unnamed)");
+    let frame_url = &frame.url;
+
+    state.lock().await.active_frame_id = Some(frame_id.clone());
+
+    Response::ok_data(ResponseData::Text {
+        text: format!("switched to frame: name={frame_name} url={frame_url} id={frame_id}"),
+    })
+}
+
+/// Switch back to the main (top-level) frame.
+async fn cmd_main_frame(state: &Arc<Mutex<DaemonState>>) -> Response {
+    let mut guard = state.lock().await;
+    let was_in_frame = guard.active_frame_id.is_some();
+    guard.active_frame_id = None;
+    if was_in_frame {
+        Response::ok_data(ResponseData::Text {
+            text: "switched to main frame".into(),
+        })
+    } else {
+        Response::ok_data(ResponseData::Text {
+            text: "already in main frame".into(),
+        })
+    }
+}
+
+/// Add a network interception route.
+///
+/// Injects JS to monkey-patch `fetch` and `XMLHttpRequest` so requests
+/// matching the pattern are fulfilled with a custom response or aborted.
+async fn cmd_route(
+    state: &Arc<Mutex<DaemonState>>,
+    pattern: String,
+    action: String,
+    status: u16,
+    body: String,
+    content_type: String,
+) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    // Store the route in daemon state.
+    state.lock().await.routes.push(InterceptRoute {
+        pattern: pattern.clone(),
+        action: action.clone(),
+        status,
+        body: body.clone(),
+        content_type: content_type.clone(),
+    });
+
+    // Inject JS interception for this pattern.
+    let js = if action == "abort" {
+        format!(
+            r"(() => {{
+                if (!window.__brother_routes) window.__brother_routes = [];
+                window.__brother_routes.push({{ pattern: '{pat}', action: 'abort' }});
+                if (!window.__brother_fetch_patched) {{
+                    window.__brother_fetch_patched = true;
+                    const F = window.fetch;
+                    window.fetch = function(url, opts) {{
+                        const u = typeof url === 'string' ? url : url.url || '';
+                        const r = (window.__brother_routes || []).find(r => u.includes(r.pattern));
+                        if (r && r.action === 'abort') return Promise.reject(new TypeError('Network request aborted by brother route'));
+                        if (r && r.action === 'fulfill') return Promise.resolve(new Response(r.body, {{ status: r.status, headers: {{ 'Content-Type': r.contentType }} }}));
+                        return F.apply(this, arguments);
+                    }};
+                }}
+            }})()",
+            pat = pattern.replace('\'', "\\'")
+        )
+    } else {
+        format!(
+            r"(() => {{
+                if (!window.__brother_routes) window.__brother_routes = [];
+                window.__brother_routes.push({{ pattern: '{pat}', action: 'fulfill', status: {status}, body: '{body_esc}', contentType: '{ct}' }});
+                if (!window.__brother_fetch_patched) {{
+                    window.__brother_fetch_patched = true;
+                    const F = window.fetch;
+                    window.fetch = function(url, opts) {{
+                        const u = typeof url === 'string' ? url : url.url || '';
+                        const r = (window.__brother_routes || []).find(r => u.includes(r.pattern));
+                        if (r && r.action === 'abort') return Promise.reject(new TypeError('Network request aborted by brother route'));
+                        if (r && r.action === 'fulfill') return Promise.resolve(new Response(r.body, {{ status: r.status, headers: {{ 'Content-Type': r.contentType }} }}));
+                        return F.apply(this, arguments);
+                    }};
+                }}
+            }})()",
+            pat = pattern.replace('\'', "\\'"),
+            body_esc = body.replace('\'', "\\'").replace('\n', "\\n"),
+            ct = content_type.replace('\'', "\\'"),
+        )
+    };
+
+    if let Err(e) = page.eval(&js).await {
+        return Response::error(format!("failed to inject route: {e}"));
+    }
+
+    let count = state.lock().await.routes.len();
+    Response::ok_data(ResponseData::Text {
+        text: format!("route added: {action} for \"{pattern}\" ({count} active routes)"),
+    })
+}
+
+/// Remove a network interception route by pattern.
+async fn cmd_unroute(state: &Arc<Mutex<DaemonState>>, pattern: &str) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let mut guard = state.lock().await;
+    let before = guard.routes.len();
+    if pattern == "*" {
+        guard.routes.clear();
+    } else {
+        guard.routes.retain(|r| r.pattern != pattern);
+    }
+    let removed = before - guard.routes.len();
+    drop(guard);
+
+    // Remove matching routes from JS.
+    let js = if pattern == "*" {
+        "window.__brother_routes = []".to_owned()
+    } else {
+        format!(
+            "window.__brother_routes = (window.__brother_routes||[]).filter(r => r.pattern !== '{}')",
+            pattern.replace('\'', "\\'")
+        )
+    };
+    let _ = page.eval(&js).await;
+
+    Response::ok_data(ResponseData::Text {
+        text: format!("removed {removed} route(s)"),
+    })
+}
+
+/// List or clear captured network requests.
+async fn cmd_requests(state: &Arc<Mutex<DaemonState>>, action: Option<&str>) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    // Enable request tracking if not already done.
+    let init_js = r"(() => {
+        if (!window.__brother_req_tracked) {
+            window.__brother_req_tracked = true;
+            window.__brother_requests = [];
+            const curFetch = window.fetch;
+            window.fetch = function(url, opts) {
+                const u = typeof url === 'string' ? url : url.url || '';
+                const m = (opts && opts.method) || 'GET';
+                window.__brother_requests.push({url: u, method: m, type: 'fetch', timestamp: Date.now()});
+                return curFetch.apply(this, arguments);
+            };
+            const XOpen = XMLHttpRequest.prototype.open;
+            XMLHttpRequest.prototype.open = function(method, url) {
+                this.__bro_method = method;
+                this.__bro_url = url;
+                return XOpen.apply(this, arguments);
+            };
+            const XSend = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.send = function() {
+                if (this.__bro_url) {
+                    window.__brother_requests.push({url: this.__bro_url, method: this.__bro_method || 'GET', type: 'xhr', timestamp: Date.now()});
+                }
+                return XSend.apply(this, arguments);
+            };
+        }
+    })()";
+    let _ = page.eval(init_js).await;
+
+    if action == Some("clear") {
+        let _ = page.eval("window.__brother_requests = []").await;
+        state.lock().await.captured_requests.clear();
+        return Response::ok_data(ResponseData::Text {
+            text: "requests cleared".into(),
+        });
+    }
+
+    // Drain JS-captured requests.
+    let drain_js = r"(() => {
+        const r = window.__brother_requests || [];
+        window.__brother_requests = [];
+        return r;
+    })()";
+
+    let val: serde_json::Value = page.eval(drain_js).await.unwrap_or_default();
+
+    let entries = if let serde_json::Value::Array(arr) = val {
+        arr
+    } else {
+        Vec::new()
+    };
+
+    Response::ok_data(ResponseData::Logs {
+        entries: serde_json::Value::Array(entries),
+    })
+}
+
+/// Grant clipboard permissions via raw CDP `Browser.grantPermissions`.
+async fn grant_clipboard_permission(page: &Page) {
+    let origin = page.url().await.unwrap_or_default();
+    let params = serde_json::json!({
+        "permissions": ["clipboardReadWrite", "clipboardSanitizedWrite"],
+        "origin": origin,
+    });
+    let cmd = chromiumoxide::cdp::browser_protocol::browser::SetPermissionParams::builder()
+        .permission(
+            chromiumoxide::cdp::browser_protocol::browser::PermissionDescriptor::new("clipboard-read"),
+        )
+        .setting(chromiumoxide::cdp::browser_protocol::browser::PermissionSetting::Granted)
+        .origin(origin.clone())
+        .build();
+    if let Ok(cmd) = cmd {
+        let _ = page.inner().execute(cmd).await;
+    }
+    // Also grant clipboard-write.
+    let cmd2 = chromiumoxide::cdp::browser_protocol::browser::SetPermissionParams::builder()
+        .permission(
+            chromiumoxide::cdp::browser_protocol::browser::PermissionDescriptor::new("clipboard-write"),
+        )
+        .setting(chromiumoxide::cdp::browser_protocol::browser::PermissionSetting::Granted)
+        .origin(origin)
+        .build();
+    if let Ok(cmd2) = cmd2 {
+        let _ = page.inner().execute(cmd2).await;
+    }
+    // Suppress unused variable warning.
+    let _ = params;
+}
+
+/// Read text from the system clipboard via JS `navigator.clipboard.readText()`.
+async fn cmd_clipboard_read(state: &Arc<Mutex<DaemonState>>) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    grant_clipboard_permission(&page).await;
+
+    let val: serde_json::Value = page
+        .eval("navigator.clipboard.readText()")
+        .await
+        .unwrap_or_default();
+    let text = val.as_str().unwrap_or("").to_owned();
+
+    Response::ok_data(ResponseData::Text { text })
+}
+
+/// Write text to the system clipboard via JS `navigator.clipboard.writeText()`.
+async fn cmd_clipboard_write(state: &Arc<Mutex<DaemonState>>, text: &str) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    grant_clipboard_permission(&page).await;
+
+    let escaped = text.replace('\\', "\\\\").replace('`', "\\`").replace('$', "\\$");
+    let js = format!("navigator.clipboard.writeText(`{escaped}`)");
+    if let Err(e) = page.eval(&js).await {
+        return Response::error(format!("clipboard write failed: {e}"));
+    }
+
+    Response::ok_data(ResponseData::Text {
+        text: "clipboard updated".into(),
+    })
+}
+
+/// Set download directory via CDP `Browser.setDownloadBehavior`.
+async fn cmd_set_download_path(state: &Arc<Mutex<DaemonState>>, path: &str) -> Response {
+    use chromiumoxide::cdp::browser_protocol::browser::{
+        SetDownloadBehaviorBehavior, SetDownloadBehaviorParams,
+    };
+
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let mut params = SetDownloadBehaviorParams::new(SetDownloadBehaviorBehavior::AllowAndName);
+    params.download_path = Some(path.to_owned());
+
+    if let Err(e) = page.inner().execute(params).await {
+        return Response::error(format!("failed to set download path: {e}"));
+    }
+
+    state.lock().await.download_path = Some(path.to_owned());
+
+    Response::ok_data(ResponseData::Text {
+        text: format!("download path set to: {path}"),
+    })
+}
+
+/// List or clear download log. Currently lists files in the download directory.
+async fn cmd_downloads(state: &Arc<Mutex<DaemonState>>, action: Option<&str>) -> Response {
+    let guard = state.lock().await;
+    let Some(ref dl_path) = guard.download_path else {
+        return Response::error(
+            "no download path configured. Use 'set-download-path <dir>' first.",
+        );
+    };
+    let dl_path = dl_path.clone();
+    drop(guard);
+
+    if action == Some("clear") {
+        return Response::ok_data(ResponseData::Text {
+            text: "download log cleared".into(),
+        });
+    }
+
+    // List files in the download directory.
+    let entries: Vec<serde_json::Value> = match tokio::fs::read_dir(&dl_path).await {
+        Ok(mut dir) => {
+            let mut files = Vec::new();
+            while let Ok(Some(entry)) = dir.next_entry().await {
+                let name = entry.file_name().to_string_lossy().to_string();
+                let size = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
+                files.push(serde_json::json!({
+                    "name": name,
+                    "size": size,
+                }));
+            }
+            files
+        }
+        Err(e) => {
+            return Response::error(format!("failed to read download dir: {e}"));
+        }
+    };
+
+    Response::ok_data(ResponseData::Logs {
+        entries: serde_json::Value::Array(entries),
+    })
 }
 
 /// Get the active page (tab).

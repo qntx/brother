@@ -125,6 +125,69 @@ enum Command {
         #[arg(short, long)]
         target: Option<String>,
     },
+    /// Switch to a child frame (iframe) by name, URL, or index.
+    Frame {
+        /// Frame name, URL substring, or numeric index.
+        selector: String,
+    },
+    /// Switch back to the main (top-level) frame.
+    MainFrame,
+    /// Hold a key down (without releasing).
+    KeyDown {
+        /// Key name (e.g. `Shift`, `a`).
+        key: String,
+    },
+    /// Release a held key.
+    KeyUp {
+        /// Key name (e.g. `Shift`, `a`).
+        key: String,
+    },
+    /// Insert text directly (no key events).
+    InsertText {
+        /// Text to insert.
+        text: String,
+    },
+    /// Upload files to a file input.
+    Upload {
+        /// Ref or CSS selector of the `<input type="file">`.
+        target: String,
+        /// File paths to upload.
+        #[arg(required = true)]
+        files: Vec<String>,
+    },
+    /// Drag one element onto another.
+    Drag {
+        /// Source ref or CSS selector.
+        source: String,
+        /// Drop target ref or CSS selector.
+        target: String,
+    },
+    /// Clear an input field.
+    Clear {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Scroll an element into view.
+    ScrollIntoView {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Get bounding box (x, y, width, height) of an element.
+    BoundingBox {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Set the page HTML content directly.
+    SetContent {
+        /// HTML content.
+        html: String,
+    },
+    /// Export the page as PDF.
+    Pdf {
+        /// Output file path.
+        #[arg(default_value = "page.pdf")]
+        path: String,
+    },
     /// Capture a screenshot.
     Screenshot {
         /// Output file path.
@@ -180,6 +243,50 @@ enum Command {
         what: String,
         /// Ref or CSS selector.
         target: String,
+    },
+    /// Read text from the clipboard.
+    ClipboardRead,
+    /// Write text to the clipboard.
+    ClipboardWrite {
+        /// Text to write.
+        text: String,
+    },
+    /// Set download directory path.
+    SetDownloadPath {
+        /// Absolute directory path.
+        path: String,
+    },
+    /// List files in the download directory.
+    Downloads {
+        /// Optional: `clear` to clear the log.
+        action: Option<String>,
+    },
+    /// Intercept network requests matching a URL pattern.
+    Route {
+        /// URL substring to match.
+        pattern: String,
+        /// Action: `fulfill` or `abort`.
+        #[arg(short, long, default_value = "abort")]
+        action: String,
+        /// HTTP status code (for fulfill).
+        #[arg(short, long, default_value = "200")]
+        status: u16,
+        /// Response body (for fulfill).
+        #[arg(short, long, default_value = "")]
+        body: String,
+        /// Content-Type header (for fulfill).
+        #[arg(short, long, default_value = "text/plain")]
+        content_type: String,
+    },
+    /// Remove a network route. Use `*` to remove all.
+    Unroute {
+        /// URL pattern to remove, or `*` for all.
+        pattern: String,
+    },
+    /// List captured network requests.
+    Requests {
+        /// Optional: `clear` to clear the buffer.
+        action: Option<String>,
     },
     /// Dialog handling: message, accept, dismiss.
     Dialog {
@@ -338,6 +445,32 @@ fn build_request(cmd: &Command) -> Request {
             pixels: *pixels,
             target: target.clone(),
         },
+        Command::Frame { selector } => Request::Frame {
+            selector: selector.clone(),
+        },
+        Command::MainFrame => Request::MainFrame,
+        Command::KeyDown { key } => Request::KeyDown { key: key.clone() },
+        Command::KeyUp { key } => Request::KeyUp { key: key.clone() },
+        Command::InsertText { text } => Request::InsertText { text: text.clone() },
+        Command::Upload { target, files } => Request::Upload {
+            target: target.clone(),
+            files: files.clone(),
+        },
+        Command::Drag { source, target } => Request::Drag {
+            source: source.clone(),
+            target: target.clone(),
+        },
+        Command::Clear { target } => Request::Clear {
+            target: target.clone(),
+        },
+        Command::ScrollIntoView { target } => Request::ScrollIntoView {
+            target: target.clone(),
+        },
+        Command::BoundingBox { target } => Request::BoundingBox {
+            target: target.clone(),
+        },
+        Command::SetContent { html } => Request::SetContent { html: html.clone() },
+        Command::Pdf { path } => Request::Pdf { path: path.clone() },
         Command::Screenshot { .. } => Request::Screenshot { full_page: false },
         Command::Eval { expression } => Request::Eval {
             expression: expression.clone(),
@@ -363,6 +496,33 @@ fn build_request(cmd: &Command) -> Request {
             function.as_deref(),
             *timeout,
         ),
+        Command::ClipboardRead => Request::ClipboardRead,
+        Command::ClipboardWrite { text } => Request::ClipboardWrite { text: text.clone() },
+        Command::SetDownloadPath { path } => Request::SetDownloadPath {
+            path: path.clone(),
+        },
+        Command::Downloads { action } => Request::Downloads {
+            action: action.clone(),
+        },
+        Command::Route {
+            pattern,
+            action,
+            status,
+            body,
+            content_type,
+        } => Request::Route {
+            pattern: pattern.clone(),
+            action: action.clone(),
+            status: *status,
+            body: body.clone(),
+            content_type: content_type.clone(),
+        },
+        Command::Unroute { pattern } => Request::Unroute {
+            pattern: pattern.clone(),
+        },
+        Command::Requests { action } => Request::Requests {
+            action: action.clone(),
+        },
         Command::Dialog { action, text } => match action.as_str() {
             "accept" => Request::DialogAccept {
                 prompt_text: text.clone(),
@@ -602,6 +762,14 @@ fn print_plain(cmd: &Command, data: Option<&ResponseData>) {
                     }
                 }
             }
+        }
+        Some(ResponseData::BoundingBox {
+            x,
+            y,
+            width,
+            height,
+        }) => {
+            println!("x: {x}, y: {y}, width: {width}, height: {height}");
         }
         Some(ResponseData::TabList { tabs, active }) => {
             if let Some(arr) = tabs.as_array() {
