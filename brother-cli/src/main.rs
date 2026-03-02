@@ -10,8 +10,10 @@ use std::process::ExitCode;
 use base64::Engine;
 use brother::client::DaemonClient;
 use brother::protocol::{
-    Request, Response, ResponseData, ScrollDirection, WaitCondition, WaitStrategy,
+    MouseButton, Request, Response, ResponseData, RouteAction, ScrollDirection, WaitCondition,
+    WaitStrategy,
 };
+
 use clap::{Parser, Subcommand};
 
 /// Browser automation CLI for AI agents.
@@ -87,18 +89,22 @@ enum Command {
         /// Optional ref or CSS selector to focus first.
         #[arg(short, long)]
         target: Option<String>,
+        /// Delay between keystrokes in ms (0 = no delay).
+        #[arg(short, long, default_value = "0")]
+        delay: u64,
     },
     /// Press a key combo (e.g. `Enter`, `Control+a`).
     Press {
         /// Key or key combo.
         key: String,
     },
-    /// Select a dropdown option by value.
+    /// Select dropdown option(s) by value.
     Select {
         /// Ref or CSS selector of the `<select>`.
         target: String,
-        /// Option value to select.
-        value: String,
+        /// Option value(s) to select (supports multi-select).
+        #[arg(required = true)]
+        values: Vec<String>,
     },
     /// Check a checkbox.
     Check {
@@ -199,6 +205,9 @@ enum Command {
         /// Output file path.
         #[arg(short, long, default_value = "screenshot.png")]
         output: String,
+        /// Capture the full scrollable page.
+        #[arg(long)]
+        full_page: bool,
         /// CSS selector to screenshot a specific element.
         #[arg(short, long)]
         selector: Option<String>,
@@ -308,6 +317,32 @@ enum Command {
         /// Password.
         password: String,
     },
+    /// Override the browser user-agent string.
+    UserAgent {
+        /// User-agent string.
+        user_agent: String,
+    },
+    /// Override the timezone.
+    Timezone {
+        /// IANA timezone ID (e.g. `America/New_York`).
+        timezone_id: String,
+    },
+    /// Override the locale.
+    Locale {
+        /// Locale string (e.g. `en-US`).
+        locale: String,
+    },
+    /// Grant or revoke browser permissions.
+    Permissions {
+        /// Permission names (e.g. `geolocation`, `notifications`).
+        #[arg(required = true)]
+        permissions: Vec<String>,
+        /// Deny instead of grant.
+        #[arg(long)]
+        deny: bool,
+    },
+    /// Bring the current page to front.
+    BringToFront,
     /// Get computed styles of an element.
     Styles {
         /// Ref or CSS selector.
@@ -329,6 +364,30 @@ enum Command {
         x: f64,
         /// Y coordinate.
         y: f64,
+    },
+    /// Scroll with the mouse wheel.
+    Wheel {
+        /// Vertical scroll delta (pixels, positive = down).
+        #[arg(default_value = "0")]
+        delta_y: f64,
+        /// Horizontal scroll delta.
+        #[arg(short = 'x', long, default_value = "0")]
+        delta_x: f64,
+        /// Optional CSS selector to hover first.
+        #[arg(short, long)]
+        selector: Option<String>,
+    },
+    /// Touch-tap an element.
+    Tap {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Set an input value directly (no events).
+    SetValue {
+        /// Ref or CSS selector.
+        target: String,
+        /// Value to set.
+        value: String,
     },
     /// Press a mouse button down.
     MouseDown {
@@ -392,6 +451,23 @@ enum Command {
         /// Optional: `clear` to clear the log.
         action: Option<String>,
     },
+    /// Wait for a download to complete.
+    WaitForDownload {
+        /// Optional path to save the file.
+        #[arg(short, long)]
+        path: Option<String>,
+        /// Timeout in ms (default 30000).
+        #[arg(short, long, default_value = "30000")]
+        timeout: u64,
+    },
+    /// Wait for and capture a network response body matching a URL pattern.
+    ResponseBody {
+        /// URL substring to match.
+        url: String,
+        /// Timeout in ms (default 30000).
+        #[arg(short, long, default_value = "30000")]
+        timeout: u64,
+    },
     /// Intercept network requests matching a URL pattern.
     Route {
         /// URL substring to match.
@@ -418,6 +494,9 @@ enum Command {
     Requests {
         /// Optional: `clear` to clear the buffer.
         action: Option<String>,
+        /// URL pattern to filter results.
+        #[arg(short, long)]
+        filter: Option<String>,
     },
     /// Dialog handling: message, accept, dismiss.
     Dialog {
@@ -463,9 +542,17 @@ enum Command {
         index: Option<usize>,
     },
     /// Get captured console messages (drains buffer).
-    Console,
+    Console {
+        /// Clear logs without returning them.
+        #[arg(long)]
+        clear: bool,
+    },
     /// Get captured JS errors (drains buffer).
-    Errors,
+    Errors {
+        /// Clear errors without returning them.
+        #[arg(long)]
+        clear: bool,
+    },
     /// Check daemon and browser status.
     Status,
     /// Close the browser and stop the daemon.
@@ -542,7 +629,7 @@ fn build_request(cmd: &Command) -> Request {
             click_count,
         } => Request::Click {
             target: target.clone(),
-            button: button.clone(),
+            button: parse_mouse_button(button),
             click_count: *click_count,
         },
         Command::Dblclick { target } => Request::DblClick {
@@ -552,14 +639,19 @@ fn build_request(cmd: &Command) -> Request {
             target: target.clone(),
             value: value.clone(),
         },
-        Command::Type { text, target } => Request::Type {
+        Command::Type {
+            text,
+            target,
+            delay,
+        } => Request::Type {
             target: target.clone(),
             text: text.clone(),
+            delay_ms: *delay,
         },
         Command::Press { key } => Request::Press { key: key.clone() },
-        Command::Select { target, value } => Request::Select {
+        Command::Select { target, values } => Request::Select {
             target: target.clone(),
-            value: value.clone(),
+            values: values.clone(),
         },
         Command::Check { target } => Request::Check {
             target: target.clone(),
@@ -609,12 +701,13 @@ fn build_request(cmd: &Command) -> Request {
         Command::SetContent { html } => Request::SetContent { html: html.clone() },
         Command::Pdf { path } => Request::Pdf { path: path.clone() },
         Command::Screenshot {
+            full_page,
             selector,
             format,
             quality,
             ..
         } => Request::Screenshot {
-            full_page: false,
+            full_page: *full_page,
             selector: selector.clone(),
             format: format.clone(),
             quality: *quality,
@@ -675,6 +768,20 @@ fn build_request(cmd: &Command) -> Request {
             username: username.clone(),
             password: password.clone(),
         },
+        Command::UserAgent { user_agent } => Request::UserAgent {
+            user_agent: user_agent.clone(),
+        },
+        Command::Timezone { timezone_id } => Request::Timezone {
+            timezone_id: timezone_id.clone(),
+        },
+        Command::Locale { locale } => Request::Locale {
+            locale: locale.clone(),
+        },
+        Command::Permissions { permissions, deny } => Request::Permissions {
+            permissions: permissions.clone(),
+            grant: !deny,
+        },
+        Command::BringToFront => Request::BringToFront,
         Command::Styles { target } => Request::Styles {
             target: target.clone(),
         },
@@ -686,10 +793,26 @@ fn build_request(cmd: &Command) -> Request {
         },
         Command::MouseMove { x, y } => Request::MouseMove { x: *x, y: *y },
         Command::MouseDown { button } => Request::MouseDown {
-            button: button.clone(),
+            button: parse_mouse_button(button),
         },
         Command::MouseUp { button } => Request::MouseUp {
-            button: button.clone(),
+            button: parse_mouse_button(button),
+        },
+        Command::Wheel {
+            delta_y,
+            delta_x,
+            selector,
+        } => Request::Wheel {
+            delta_x: *delta_x,
+            delta_y: *delta_y,
+            selector: selector.clone(),
+        },
+        Command::Tap { target } => Request::Tap {
+            target: target.clone(),
+        },
+        Command::SetValue { target, value } => Request::SetValue {
+            target: target.clone(),
+            value: value.clone(),
         },
         Command::AddInitScript { script } => Request::AddInitScript {
             script: script.clone(),
@@ -719,6 +842,14 @@ fn build_request(cmd: &Command) -> Request {
         Command::Downloads { action } => Request::Downloads {
             action: action.clone(),
         },
+        Command::WaitForDownload { path, timeout } => Request::WaitForDownload {
+            path: path.clone(),
+            timeout_ms: *timeout,
+        },
+        Command::ResponseBody { url, timeout } => Request::ResponseBody {
+            url: url.clone(),
+            timeout_ms: *timeout,
+        },
         Command::Route {
             pattern,
             action,
@@ -727,7 +858,7 @@ fn build_request(cmd: &Command) -> Request {
             content_type,
         } => Request::Route {
             pattern: pattern.clone(),
-            action: action.clone(),
+            action: parse_route_action(action),
             status: *status,
             body: body.clone(),
             content_type: content_type.clone(),
@@ -735,8 +866,9 @@ fn build_request(cmd: &Command) -> Request {
         Command::Unroute { pattern } => Request::Unroute {
             pattern: pattern.clone(),
         },
-        Command::Requests { action } => Request::Requests {
+        Command::Requests { action, filter } => Request::Requests {
             action: action.clone(),
+            filter: filter.clone(),
         },
         Command::Dialog { action, text } => match action.as_str() {
             "accept" => Request::DialogAccept {
@@ -791,8 +923,8 @@ fn build_request(cmd: &Command) -> Request {
         Command::TabList => Request::TabList,
         Command::TabSelect { index } => Request::TabSelect { index: *index },
         Command::TabClose { index } => Request::TabClose { index: *index },
-        Command::Console => Request::Console,
-        Command::Errors => Request::Errors,
+        Command::Console { clear } => Request::Console { clear: *clear },
+        Command::Errors { clear } => Request::Errors { clear: *clear },
         Command::Status | Command::Daemon => Request::Status,
         Command::Close => Request::Close,
     }
@@ -804,6 +936,21 @@ fn parse_direction(s: &str) -> ScrollDirection {
         "left" => ScrollDirection::Left,
         "right" => ScrollDirection::Right,
         _ => ScrollDirection::Down,
+    }
+}
+
+fn parse_mouse_button(s: &str) -> MouseButton {
+    match s.to_ascii_lowercase().as_str() {
+        "right" => MouseButton::Right,
+        "middle" => MouseButton::Middle,
+        _ => MouseButton::Left,
+    }
+}
+
+fn parse_route_action(s: &str) -> RouteAction {
+    match s.to_ascii_lowercase().as_str() {
+        "fulfill" => RouteAction::Fulfill,
+        _ => RouteAction::Abort,
     }
 }
 

@@ -17,7 +17,9 @@ use tokio::sync::Mutex;
 use crate::config::BrowserConfig;
 use crate::error::Error;
 use crate::page::Page;
-use crate::protocol::{Request, Response, ResponseData, WaitCondition, WaitStrategy};
+use crate::protocol::{
+    MouseButton, Request, Response, ResponseData, RouteAction, WaitCondition, WaitStrategy,
+};
 
 /// Default idle timeout before auto-shutdown.
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_mins(5);
@@ -44,7 +46,7 @@ struct DaemonState {
 #[allow(dead_code)]
 struct InterceptRoute {
     pattern: String,
-    action: String,
+    action: RouteAction,
     status: u16,
     body: String,
     content_type: String,
@@ -259,13 +261,17 @@ async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> Response {
             target,
             button,
             click_count,
-        } => cmd_click(state, &target, &button, click_count).await,
+        } => cmd_click(state, &target, button, click_count).await,
         Request::DblClick { target } => page_ok!(state, &target, dblclick(&target)),
         Request::Fill { target, value } => page_ok!(state, &target, fill(&target, &value)),
-        Request::Type { target, text } => cmd_type(state, target.as_deref(), &text).await,
+        Request::Type {
+            target,
+            text,
+            delay_ms,
+        } => cmd_type(state, target.as_deref(), &text, delay_ms).await,
         Request::Press { key } => page_ok!(state, key_press(&key)),
-        Request::Select { target, value } => {
-            page_ok!(state, &target, select_option(&target, &value))
+        Request::Select { target, values } => {
+            cmd_select(state, &target, &values).await
         }
         Request::Check { target } => page_ok!(state, &target, check(&target)),
         Request::Uncheck { target } => page_ok!(state, &target, uncheck(&target)),
@@ -306,11 +312,19 @@ async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> Response {
             content_type,
         } => cmd_route(state, pattern, action, status, body, content_type).await,
         Request::Unroute { pattern } => cmd_unroute(state, &pattern).await,
-        Request::Requests { action } => cmd_requests(state, action.as_deref()).await,
+        Request::Requests { action, filter } => {
+            cmd_requests(state, action.as_deref(), filter.as_deref()).await
+        }
 
         // Download handling
         Request::SetDownloadPath { path } => cmd_set_download_path(state, &path).await,
         Request::Downloads { action } => cmd_downloads(state, action.as_deref()).await,
+        Request::WaitForDownload { path, timeout_ms } => {
+            cmd_wait_for_download(state, path.as_deref(), timeout_ms).await
+        }
+        Request::ResponseBody { url, timeout_ms } => {
+            cmd_response_body(state, &url, timeout_ms).await
+        }
 
         // Clipboard
         Request::ClipboardRead => cmd_clipboard_read(state).await,
@@ -343,6 +357,13 @@ async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> Response {
         Request::Credentials { username, password } => {
             cmd_credentials(state, &username, &password).await
         }
+        Request::UserAgent { user_agent } => cmd_user_agent(state, &user_agent).await,
+        Request::Timezone { timezone_id } => cmd_timezone(state, &timezone_id).await,
+        Request::Locale { locale } => cmd_locale(state, &locale).await,
+        Request::Permissions { permissions, grant } => {
+            cmd_permissions(state, &permissions, grant).await
+        }
+        Request::BringToFront => cmd_bring_to_front(state).await,
 
         // Script injection
         Request::AddInitScript { script } => cmd_add_init_script(state, &script).await,
@@ -363,8 +384,17 @@ async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> Response {
         Request::SelectAll { target } => cmd_select_all(state, &target).await,
         Request::Highlight { target } => cmd_highlight(state, &target).await,
         Request::MouseMove { x, y } => cmd_mouse_move(state, x, y).await,
-        Request::MouseDown { button } => cmd_mouse_down(state, &button).await,
-        Request::MouseUp { button } => cmd_mouse_up(state, &button).await,
+        Request::MouseDown { button } => cmd_mouse_down(state, button).await,
+        Request::MouseUp { button } => cmd_mouse_up(state, button).await,
+        Request::Wheel {
+            delta_x,
+            delta_y,
+            selector,
+        } => cmd_wheel(state, delta_x, delta_y, selector.as_deref()).await,
+        Request::Tap { target } => cmd_tap(state, &target).await,
+        Request::SetValue { target, value } => {
+            cmd_set_value(state, &target, &value).await
+        }
 
         // Query — pass target for AI-friendly error rewriting
         Request::GetText { target } => cmd_text(state, target.as_deref()).await,
@@ -413,8 +443,8 @@ async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> Response {
         Request::TabClose { index } => cmd_tab_close(state, index).await,
 
         // Debug
-        Request::Console => cmd_console(state).await,
-        Request::Errors => cmd_errors(state).await,
+        Request::Console { clear } => cmd_console(state, clear).await,
+        Request::Errors { clear } => cmd_errors(state, clear).await,
 
         // Lifecycle
         Request::Status => cmd_status(state).await,
@@ -634,7 +664,7 @@ async fn cmd_main_frame(state: &Arc<Mutex<DaemonState>>) -> Response {
 async fn cmd_route(
     state: &Arc<Mutex<DaemonState>>,
     pattern: String,
-    action: String,
+    action: RouteAction,
     status: u16,
     body: String,
     content_type: String,
@@ -647,14 +677,14 @@ async fn cmd_route(
     // Store the route in daemon state.
     state.lock().await.routes.push(InterceptRoute {
         pattern: pattern.clone(),
-        action: action.clone(),
+        action,
         status,
         body: body.clone(),
         content_type: content_type.clone(),
     });
 
     // Inject JS interception for this pattern.
-    let js = if action == "abort" {
+    let js = if matches!(action, RouteAction::Abort) {
         format!(
             r"(() => {{
                 if (!window.__brother_routes) window.__brother_routes = [];
@@ -702,7 +732,7 @@ async fn cmd_route(
 
     let count = state.lock().await.routes.len();
     Response::ok_data(ResponseData::Text {
-        text: format!("route added: {action} for \"{pattern}\" ({count} active routes)"),
+        text: format!("route added: {action:?} for \"{pattern}\" ({count} active routes)"),
     })
 }
 
@@ -740,7 +770,11 @@ async fn cmd_unroute(state: &Arc<Mutex<DaemonState>>, pattern: &str) -> Response
 }
 
 /// List or clear captured network requests.
-async fn cmd_requests(state: &Arc<Mutex<DaemonState>>, action: Option<&str>) -> Response {
+async fn cmd_requests(
+    state: &Arc<Mutex<DaemonState>>,
+    action: Option<&str>,
+    filter: Option<&str>,
+) -> Response {
     let page = match get_page(state).await {
         Ok(p) => p,
         Err(r) => return r,
@@ -793,7 +827,17 @@ async fn cmd_requests(state: &Arc<Mutex<DaemonState>>, action: Option<&str>) -> 
     let val: serde_json::Value = page.eval(drain_js).await.unwrap_or_default();
 
     let entries = if let serde_json::Value::Array(arr) = val {
-        arr
+        if let Some(pat) = filter {
+            arr.into_iter()
+                .filter(|e| {
+                    e.get("url")
+                        .and_then(|u| u.as_str())
+                        .is_some_and(|u| u.contains(pat))
+                })
+                .collect()
+        } else {
+            arr
+        }
     } else {
         Vec::new()
     };
@@ -867,6 +911,29 @@ async fn cmd_clipboard_write(state: &Arc<Mutex<DaemonState>>, text: &str) -> Res
 }
 
 // ---------------------------------------------------------------------------
+// Multi-select handler
+// ---------------------------------------------------------------------------
+
+/// Select one or more dropdown options by value.
+async fn cmd_select(
+    state: &Arc<Mutex<DaemonState>>,
+    target: &str,
+    values: &[String],
+) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    // Select each value; for single-value, just use the first.
+    for v in values {
+        if let Err(e) = page.select_option(target, v).await {
+            return Response::error(e.ai_friendly(target).to_string());
+        }
+    }
+    Response::ok()
+}
+
+// ---------------------------------------------------------------------------
 // Enhanced click handler
 // ---------------------------------------------------------------------------
 
@@ -874,11 +941,12 @@ async fn cmd_clipboard_write(state: &Arc<Mutex<DaemonState>>, text: &str) -> Res
 async fn cmd_click(
     state: &Arc<Mutex<DaemonState>>,
     target: &str,
-    button: &str,
+    button: MouseButton,
     click_count: u32,
 ) -> Response {
     use chromiumoxide::cdp::browser_protocol::input::{
-        DispatchMouseEventParams, DispatchMouseEventType, MouseButton,
+        DispatchMouseEventParams, DispatchMouseEventType,
+        MouseButton as CdpMouseButton,
     };
 
     let page = match get_page(state).await {
@@ -887,7 +955,7 @@ async fn cmd_click(
     };
 
     // For default left-click with count=1, use the simple path
-    if button == "left" && click_count == 1 {
+    if matches!(button, MouseButton::Left) && click_count == 1 {
         return match page.click(target).await {
             Ok(()) => Response::ok(),
             Err(e) => Response::error(e.ai_friendly(target).to_string()),
@@ -900,9 +968,9 @@ async fn cmd_click(
     };
 
     let mb = match button {
-        "right" => MouseButton::Right,
-        "middle" => MouseButton::Middle,
-        _ => MouseButton::Left,
+        MouseButton::Right => CdpMouseButton::Right,
+        MouseButton::Middle => CdpMouseButton::Middle,
+        MouseButton::Left => CdpMouseButton::Left,
     };
 
     for i in 0..click_count {
@@ -1139,6 +1207,228 @@ async fn cmd_credentials(
     Response::ok_data(ResponseData::Text {
         text: "HTTP credentials set".into(),
     })
+}
+
+// ---------------------------------------------------------------------------
+// P4.2: New environment / interaction handlers
+// ---------------------------------------------------------------------------
+
+/// Override user-agent string via CDP `Network.setUserAgentOverride`.
+async fn cmd_user_agent(state: &Arc<Mutex<DaemonState>>, user_agent: &str) -> Response {
+    use chromiumoxide::cdp::browser_protocol::network::SetUserAgentOverrideParams;
+
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let params = SetUserAgentOverrideParams::new(user_agent.to_owned());
+    if let Err(e) = page.inner().execute(params).await {
+        return Response::error(format!("user-agent override failed: {e}"));
+    }
+
+    Response::ok_data(ResponseData::Text {
+        text: format!("user-agent set to: {user_agent}"),
+    })
+}
+
+/// Override timezone via CDP `Emulation.setTimezoneOverride`.
+async fn cmd_timezone(state: &Arc<Mutex<DaemonState>>, timezone_id: &str) -> Response {
+    use chromiumoxide::cdp::browser_protocol::emulation::SetTimezoneOverrideParams;
+
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let params = SetTimezoneOverrideParams::new(timezone_id.to_owned());
+    if let Err(e) = page.inner().execute(params).await {
+        return Response::error(format!("timezone override failed: {e}"));
+    }
+
+    Response::ok_data(ResponseData::Text {
+        text: format!("timezone set to: {timezone_id}"),
+    })
+}
+
+/// Override locale via JS `navigator.language` override and CDP intl hint.
+async fn cmd_locale(state: &Arc<Mutex<DaemonState>>, locale: &str) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    // Override navigator.language and navigator.languages via JS
+    let js = format!(
+        "Object.defineProperty(navigator, 'language', {{ get: () => '{}' }}); \
+         Object.defineProperty(navigator, 'languages', {{ get: () => ['{}'] }});",
+        locale.replace('\'', "\\'"),
+        locale.replace('\'', "\\'"),
+    );
+    if let Err(e) = page.eval(&js).await {
+        return Response::error(format!("locale override failed: {e}"));
+    }
+
+    Response::ok_data(ResponseData::Text {
+        text: format!("locale set to: {locale}"),
+    })
+}
+
+/// Grant or revoke browser permissions via CDP `Browser.setPermission`.
+async fn cmd_permissions(
+    state: &Arc<Mutex<DaemonState>>,
+    permissions: &[String],
+    grant: bool,
+) -> Response {
+    use chromiumoxide::cdp::browser_protocol::browser::{
+        PermissionDescriptor, PermissionSetting, SetPermissionParams,
+    };
+
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let setting = if grant {
+        PermissionSetting::Granted
+    } else {
+        PermissionSetting::Denied
+    };
+
+    for perm in permissions {
+        let descriptor = PermissionDescriptor::new(perm.clone());
+        let params = SetPermissionParams::new(descriptor, setting.clone());
+        if let Err(e) = page.inner().execute(params).await {
+            return Response::error(format!("permission '{perm}' failed: {e}"));
+        }
+    }
+
+    let action = if grant { "granted" } else { "denied" };
+    Response::ok_data(ResponseData::Text {
+        text: format!("{action}: {}", permissions.join(", ")),
+    })
+}
+
+/// Bring the current page to front via CDP `Page.bringToFront`.
+async fn cmd_bring_to_front(state: &Arc<Mutex<DaemonState>>) -> Response {
+    use chromiumoxide::cdp::browser_protocol::page::BringToFrontParams;
+
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    if let Err(e) = page.inner().execute(BringToFrontParams::default()).await {
+        return Response::error(format!("bring to front failed: {e}"));
+    }
+
+    Response::ok()
+}
+
+/// Scroll with the mouse wheel via CDP `Input.dispatchMouseEvent`.
+async fn cmd_wheel(
+    state: &Arc<Mutex<DaemonState>>,
+    delta_x: f64,
+    delta_y: f64,
+    selector: Option<&str>,
+) -> Response {
+    use chromiumoxide::cdp::browser_protocol::input::{
+        DispatchMouseEventParams, DispatchMouseEventType,
+    };
+
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    // If selector given, hover it first so the wheel targets that element.
+    if let Some(sel) = selector
+        && let Err(e) = page.hover(sel).await
+    {
+        return Response::error(e.ai_friendly(sel).to_string());
+    }
+
+    let params = DispatchMouseEventParams::builder()
+        .r#type(DispatchMouseEventType::MouseWheel)
+        .x(0)
+        .y(0)
+        .delta_x(delta_x)
+        .delta_y(delta_y)
+        .build();
+
+    match params {
+        Ok(p) => {
+            if let Err(e) = page.inner().execute(p).await {
+                return Response::error(format!("wheel failed: {e}"));
+            }
+        }
+        Err(e) => return Response::error(format!("wheel params failed: {e}")),
+    }
+
+    Response::ok()
+}
+
+/// Touch-tap an element by resolving its center and dispatching touch events.
+async fn cmd_tap(state: &Arc<Mutex<DaemonState>>, target: &str) -> Response {
+    use chromiumoxide::cdp::browser_protocol::input::{
+        DispatchTouchEventParams, DispatchTouchEventType, TouchPoint,
+    };
+
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let center = match page.resolve_target_center(target).await {
+        Ok(c) => c,
+        Err(e) => return Response::error(e.ai_friendly(target).to_string()),
+    };
+
+    let point = TouchPoint::new(center.x, center.y);
+
+    // Touch start
+    let start = DispatchTouchEventParams::new(
+        DispatchTouchEventType::TouchStart,
+        vec![point.clone()],
+    );
+    if let Err(e) = page.inner().execute(start).await {
+        return Response::error(format!("tap failed (touchStart): {e}"));
+    }
+
+    // Touch end
+    let end = DispatchTouchEventParams::new(DispatchTouchEventType::TouchEnd, vec![]);
+    if let Err(e) = page.inner().execute(end).await {
+        return Response::error(format!("tap failed (touchEnd): {e}"));
+    }
+
+    Response::ok()
+}
+
+/// Set an input value directly (no events) via JS.
+async fn cmd_set_value(
+    state: &Arc<Mutex<DaemonState>>,
+    target: &str,
+    value: &str,
+) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let escaped = value.replace('\\', "\\\\").replace('\'', "\\'");
+    let js = format!(
+        "(() => {{ const el = document.querySelector('{sel}'); \
+         if (!el) throw new Error('Element not found: {sel}'); \
+         el.value = '{val}'; }})() ",
+        sel = target.replace('\'', "\\'"),
+        val = escaped,
+    );
+
+    if let Err(e) = page.eval(&js).await {
+        return Response::error(format!("set value failed: {e}"));
+    }
+
+    Response::ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -1398,10 +1688,22 @@ async fn cmd_mouse_move(state: &Arc<Mutex<DaemonState>>, x: f64, y: f64) -> Resp
     })
 }
 
+/// Convert our `MouseButton` enum to CDP `MouseButton`.
+const fn to_cdp_mouse_button(
+    button: MouseButton,
+) -> chromiumoxide::cdp::browser_protocol::input::MouseButton {
+    use chromiumoxide::cdp::browser_protocol::input::MouseButton as CdpMB;
+    match button {
+        MouseButton::Right => CdpMB::Right,
+        MouseButton::Middle => CdpMB::Middle,
+        MouseButton::Left => CdpMB::Left,
+    }
+}
+
 /// Press a mouse button down via CDP `Input.dispatchMouseEvent`.
-async fn cmd_mouse_down(state: &Arc<Mutex<DaemonState>>, button: &str) -> Response {
+async fn cmd_mouse_down(state: &Arc<Mutex<DaemonState>>, button: MouseButton) -> Response {
     use chromiumoxide::cdp::browser_protocol::input::{
-        DispatchMouseEventParams, DispatchMouseEventType, MouseButton,
+        DispatchMouseEventParams, DispatchMouseEventType,
     };
 
     let page = match get_page(state).await {
@@ -1409,15 +1711,9 @@ async fn cmd_mouse_down(state: &Arc<Mutex<DaemonState>>, button: &str) -> Respon
         Err(r) => return r,
     };
 
-    let mb = match button {
-        "right" => MouseButton::Right,
-        "middle" => MouseButton::Middle,
-        _ => MouseButton::Left,
-    };
-
     let params = DispatchMouseEventParams::builder()
         .r#type(DispatchMouseEventType::MousePressed)
-        .button(mb)
+        .button(to_cdp_mouse_button(button))
         .x(0)
         .y(0)
         .click_count(1)
@@ -1433,14 +1729,14 @@ async fn cmd_mouse_down(state: &Arc<Mutex<DaemonState>>, button: &str) -> Respon
     }
 
     Response::ok_data(ResponseData::Text {
-        text: format!("mouse {button} button pressed"),
+        text: format!("mouse {button:?} button pressed"),
     })
 }
 
 /// Release a mouse button via CDP `Input.dispatchMouseEvent`.
-async fn cmd_mouse_up(state: &Arc<Mutex<DaemonState>>, button: &str) -> Response {
+async fn cmd_mouse_up(state: &Arc<Mutex<DaemonState>>, button: MouseButton) -> Response {
     use chromiumoxide::cdp::browser_protocol::input::{
-        DispatchMouseEventParams, DispatchMouseEventType, MouseButton,
+        DispatchMouseEventParams, DispatchMouseEventType,
     };
 
     let page = match get_page(state).await {
@@ -1448,15 +1744,9 @@ async fn cmd_mouse_up(state: &Arc<Mutex<DaemonState>>, button: &str) -> Response
         Err(r) => return r,
     };
 
-    let mb = match button {
-        "right" => MouseButton::Right,
-        "middle" => MouseButton::Middle,
-        _ => MouseButton::Left,
-    };
-
     let params = DispatchMouseEventParams::builder()
         .r#type(DispatchMouseEventType::MouseReleased)
-        .button(mb)
+        .button(to_cdp_mouse_button(button))
         .x(0)
         .y(0)
         .click_count(1)
@@ -1472,7 +1762,7 @@ async fn cmd_mouse_up(state: &Arc<Mutex<DaemonState>>, button: &str) -> Response
     }
 
     Response::ok_data(ResponseData::Text {
-        text: format!("mouse {button} button released"),
+        text: format!("mouse {button:?} button released"),
     })
 }
 
@@ -1540,6 +1830,127 @@ async fn cmd_downloads(state: &Arc<Mutex<DaemonState>>, action: Option<&str>) ->
     Response::ok_data(ResponseData::Logs {
         entries: serde_json::Value::Array(entries),
     })
+}
+
+/// Wait for a download to complete by polling the download directory for new files.
+async fn cmd_wait_for_download(
+    state: &Arc<Mutex<DaemonState>>,
+    save_path: Option<&str>,
+    timeout_ms: u64,
+) -> Response {
+    let guard = state.lock().await;
+    let Some(ref dl_path) = guard.download_path else {
+        return Response::error(
+            "no download path configured. Use 'set-download-path <dir>' first.",
+        );
+    };
+    let dl_dir = dl_path.clone();
+    drop(guard);
+
+    // Snapshot existing files before waiting.
+    let before: std::collections::HashSet<String> =
+        match tokio::fs::read_dir(&dl_dir).await {
+            Ok(mut dir) => {
+                let mut set = std::collections::HashSet::new();
+                while let Ok(Some(entry)) = dir.next_entry().await {
+                    set.insert(entry.file_name().to_string_lossy().to_string());
+                }
+                set
+            }
+            Err(e) => return Response::error(format!("read download dir: {e}")),
+        };
+
+    // Poll for new files until timeout.
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        if tokio::time::Instant::now() > deadline {
+            return Response::error("wait for download timed out");
+        }
+        if let Ok(mut dir) = tokio::fs::read_dir(&dl_dir).await {
+            while let Ok(Some(entry)) = dir.next_entry().await {
+                let name = entry.file_name().to_string_lossy().to_string();
+                // Skip partial Chrome downloads.
+                if std::path::Path::new(&name).extension().is_some_and(|e| e == "crdownload" || e == "tmp") {
+                    continue;
+                }
+                if !before.contains(&name) {
+                    let src = std::path::Path::new(&dl_dir).join(&name);
+                    // Optionally copy to the requested path.
+                    if let Some(dest) = save_path
+                        && let Err(e) = tokio::fs::copy(&src, dest).await
+                    {
+                        return Response::error(format!("copy download failed: {e}"));
+                    }
+                    return Response::ok_data(ResponseData::Text {
+                        text: format!("downloaded: {name}"),
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Wait for a network response matching a URL pattern and return its body.
+///
+/// Uses JS fetch/XHR interception to capture response bodies. The interception
+/// script stores the body in `window.__brother_response_capture`.
+async fn cmd_response_body(
+    state: &Arc<Mutex<DaemonState>>,
+    url_pattern: &str,
+    timeout_ms: u64,
+) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    // Inject response capture hook.
+    let pat_escaped = url_pattern.replace('\'', "\\'");
+    let inject_js = format!(
+        r"(() => {{
+            if (!window.__brother_resp_hook) {{
+                window.__brother_resp_hook = true;
+                window.__brother_response_capture = null;
+                const F = window.fetch;
+                window.fetch = function(url, opts) {{
+                    const u = typeof url === 'string' ? url : url.url || '';
+                    return F.apply(this, arguments).then(resp => {{
+                        if (u.includes('{pat_escaped}') && !window.__brother_response_capture) {{
+                            resp.clone().text().then(body => {{
+                                window.__brother_response_capture = {{
+                                    url: resp.url, status: resp.status, body: body
+                                }};
+                            }});
+                        }}
+                        return resp;
+                    }});
+                }};
+            }}
+        }})()",
+    );
+    let _ = page.eval(&inject_js).await;
+
+    // Poll for captured response.
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        if tokio::time::Instant::now() > deadline {
+            return Response::error(format!(
+                "response body timed out waiting for URL matching '{url_pattern}'"
+            ));
+        }
+        let check_js = r"(() => {
+            const c = window.__brother_response_capture;
+            if (c) { window.__brother_response_capture = null; return c; }
+            return null;
+        })()";
+        if let Ok(val) = page.eval(check_js).await
+            && !val.is_null()
+        {
+            return Response::ok_data(ResponseData::Eval { value: val });
+        }
+    }
 }
 
 /// Get the active page (tab).
@@ -1647,7 +2058,12 @@ async fn cmd_eval(state: &Arc<Mutex<DaemonState>>, expression: &str) -> Response
     }
 }
 
-async fn cmd_type(state: &Arc<Mutex<DaemonState>>, target: Option<&str>, text: &str) -> Response {
+async fn cmd_type(
+    state: &Arc<Mutex<DaemonState>>,
+    target: Option<&str>,
+    text: &str,
+    delay_ms: u64,
+) -> Response {
     let page = match get_page(state).await {
         Ok(p) => p,
         Err(r) => return r,
@@ -1655,6 +2071,17 @@ async fn cmd_type(state: &Arc<Mutex<DaemonState>>, target: Option<&str>, text: &
     if let Some(t) = target {
         if let Err(e) = page.type_into(t, text).await {
             return Response::error(format!("type failed: {e}"));
+        }
+        return Response::ok();
+    }
+    if delay_ms > 0 {
+        // Type each character with a delay
+        for ch in text.chars() {
+            let s = ch.to_string();
+            if let Err(e) = page.type_text(&s).await {
+                return Response::error(format!("type failed: {e}"));
+            }
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
         }
         return Response::ok();
     }
@@ -1864,22 +2291,32 @@ async fn cmd_tab_close(state: &Arc<Mutex<DaemonState>>, index: Option<usize>) ->
     })
 }
 
-async fn cmd_console(state: &Arc<Mutex<DaemonState>>) -> Response {
+async fn cmd_console(state: &Arc<Mutex<DaemonState>>, clear: bool) -> Response {
     let page = match get_page(state).await {
         Ok(p) => p,
         Err(r) => return r,
     };
     let logs = page.take_console_logs().await;
+    if clear {
+        return Response::ok_data(ResponseData::Text {
+            text: format!("{} console entries cleared", logs.len()),
+        });
+    }
     let entries = serde_json::to_value(&logs).unwrap_or_default();
     Response::ok_data(ResponseData::Logs { entries })
 }
 
-async fn cmd_errors(state: &Arc<Mutex<DaemonState>>) -> Response {
+async fn cmd_errors(state: &Arc<Mutex<DaemonState>>, clear: bool) -> Response {
     let page = match get_page(state).await {
         Ok(p) => p,
         Err(r) => return r,
     };
     let errors = page.take_js_errors().await;
+    if clear {
+        return Response::ok_data(ResponseData::Text {
+            text: format!("{} error entries cleared", errors.len()),
+        });
+    }
     let entries = serde_json::to_value(&errors).unwrap_or_default();
     Response::ok_data(ResponseData::Logs { entries })
 }

@@ -72,9 +72,9 @@ pub enum Request {
     Click {
         /// Ref or CSS selector.
         target: String,
-        /// Mouse button: `"left"`, `"right"`, `"middle"` (default `"left"`).
-        #[serde(default = "default_mouse_button")]
-        button: String,
+        /// Mouse button (default left).
+        #[serde(default)]
+        button: MouseButton,
         /// Number of clicks (default 1, use 2 for double-click).
         #[serde(default = "default_click_count")]
         click_count: u32,
@@ -97,18 +97,21 @@ pub enum Request {
         target: Option<String>,
         /// Text to type.
         text: String,
+        /// Delay between keystrokes in milliseconds (0 = no delay).
+        #[serde(default)]
+        delay_ms: u64,
     },
     /// Press a key combo (e.g. `"Enter"`, `"Control+a"`).
     Press {
         /// Key or key combo.
         key: String,
     },
-    /// Select a dropdown option by value.
+    /// Select dropdown option(s) by value.
     Select {
         /// Ref or CSS selector of the `<select>` element.
         target: String,
-        /// Option value to select.
-        value: String,
+        /// Option value(s) to select (supports multi-select).
+        values: Vec<String>,
     },
     /// Check a checkbox (no-op if already checked).
     Check {
@@ -214,8 +217,9 @@ pub enum Request {
     Route {
         /// URL substring to match.
         pattern: String,
-        /// Action: `"fulfill"` (custom response) or `"abort"` (block).
-        action: String,
+        /// Action: fulfill (custom response) or abort (block).
+        #[serde(default)]
+        action: RouteAction,
         /// HTTP status code (for fulfill).
         #[serde(default = "default_status")]
         status: u16,
@@ -236,6 +240,9 @@ pub enum Request {
         /// Optional action: `"clear"` to clear without returning.
         #[serde(default)]
         action: Option<String>,
+        /// Optional URL pattern to filter results.
+        #[serde(default)]
+        filter: Option<String>,
     },
 
     // -- Download handling ---------------------------------------------------
@@ -246,9 +253,26 @@ pub enum Request {
     },
     /// List recent downloads or clear the download log.
     Downloads {
-        /// Optional action: `"clear"` to clear the log.
+        /// Optional action: `"clear"` to clear without returning.
         #[serde(default)]
         action: Option<String>,
+    },
+    /// Wait for a download event and save the file.
+    WaitForDownload {
+        /// Optional path to save the downloaded file.
+        #[serde(default)]
+        path: Option<String>,
+        /// Timeout in milliseconds (default 30s).
+        #[serde(default = "default_timeout_ms")]
+        timeout_ms: u64,
+    },
+    /// Wait for and capture a network response body matching a URL pattern.
+    ResponseBody {
+        /// URL substring to match.
+        url: String,
+        /// Timeout in milliseconds (default 30s).
+        #[serde(default = "default_timeout_ms")]
+        timeout_ms: u64,
     },
 
     // -- Clipboard -----------------------------------------------------------
@@ -310,6 +334,31 @@ pub enum Request {
         /// Password.
         password: String,
     },
+    /// Override the browser user-agent string.
+    UserAgent {
+        /// User-agent string.
+        user_agent: String,
+    },
+    /// Override the timezone.
+    Timezone {
+        /// IANA timezone ID (e.g. `"America/New_York"`).
+        timezone_id: String,
+    },
+    /// Override the locale.
+    Locale {
+        /// Locale string (e.g. `"en-US"`).
+        locale: String,
+    },
+    /// Grant or revoke browser permissions.
+    Permissions {
+        /// Permission names (e.g. `["geolocation", "notifications"]`).
+        permissions: Vec<String>,
+        /// Whether to grant (`true`) or deny (`false`).
+        #[serde(default = "default_true")]
+        grant: bool,
+    },
+    /// Bring the current page to front.
+    BringToFront,
 
     // -- Script injection ----------------------------------------------------
     /// Add a script to evaluate on every new document (before page JS runs).
@@ -371,15 +420,39 @@ pub enum Request {
     },
     /// Press a mouse button down at the current position.
     MouseDown {
-        /// Button: `"left"`, `"right"`, `"middle"` (default `"left"`).
-        #[serde(default = "default_mouse_button")]
-        button: String,
+        /// Mouse button (default left).
+        #[serde(default)]
+        button: MouseButton,
     },
     /// Release a mouse button at the current position.
     MouseUp {
-        /// Button: `"left"`, `"right"`, `"middle"` (default `"left"`).
-        #[serde(default = "default_mouse_button")]
-        button: String,
+        /// Mouse button (default left).
+        #[serde(default)]
+        button: MouseButton,
+    },
+    /// Scroll with the mouse wheel.
+    Wheel {
+        /// Horizontal scroll delta (pixels).
+        #[serde(default)]
+        delta_x: f64,
+        /// Vertical scroll delta (pixels, positive = down).
+        #[serde(default)]
+        delta_y: f64,
+        /// Optional CSS selector to hover first.
+        #[serde(default)]
+        selector: Option<String>,
+    },
+    /// Touch-tap an element.
+    Tap {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Set an input's value directly (no events fired).
+    SetValue {
+        /// Ref or CSS selector.
+        target: String,
+        /// Value to set.
+        value: String,
     },
 
     // -- Query -------------------------------------------------------------
@@ -504,9 +577,17 @@ pub enum Request {
 
     // -- Debug -------------------------------------------------------------
     /// Get captured console messages (drains the buffer).
-    Console,
+    Console {
+        /// Clear logs without returning them.
+        #[serde(default)]
+        clear: bool,
+    },
     /// Get captured JS errors (drains the buffer).
-    Errors,
+    Errors {
+        /// Clear errors without returning them.
+        #[serde(default)]
+        clear: bool,
+    },
 
     // -- Lifecycle ---------------------------------------------------------
     /// Check daemon health / browser status.
@@ -533,6 +614,30 @@ pub enum ScrollDirection {
     Left,
 }
 
+/// Mouse button for click and mouse commands.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MouseButton {
+    /// Left mouse button (default).
+    #[default]
+    Left,
+    /// Right mouse button.
+    Right,
+    /// Middle mouse button.
+    Middle,
+}
+
+/// Action for network route interception.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteAction {
+    /// Respond with a custom body/status.
+    #[default]
+    Fulfill,
+    /// Block the request.
+    Abort,
+}
+
 /// Default scroll distance in pixels.
 const fn default_scroll_px() -> i64 {
     500
@@ -553,9 +658,9 @@ const fn default_geo_accuracy() -> f64 {
     1.0
 }
 
-/// Default mouse button.
-fn default_mouse_button() -> String {
-    "left".into()
+/// Default boolean true.
+const fn default_true() -> bool {
+    true
 }
 
 /// Default click count.
