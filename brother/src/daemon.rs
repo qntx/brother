@@ -17,9 +17,7 @@ use tokio::sync::Mutex;
 use crate::config::BrowserConfig;
 use crate::error::Error;
 use crate::page::Page;
-use crate::protocol::{
-    MouseButton, Request, Response, ResponseData, RouteAction, WaitCondition, WaitStrategy,
-};
+use crate::protocol::{Request, Response, ResponseData, RouteAction, WaitCondition, WaitStrategy};
 
 /// Default idle timeout before auto-shutdown.
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_mins(5);
@@ -203,6 +201,20 @@ macro_rules! page_ok {
     }};
 }
 
+/// Execute a page method returning `Result<serde_json::Value>` → `ResponseData::Eval`.
+macro_rules! page_eval {
+    ($state:expr, $($call:tt)*) => {{
+        let page = match get_page($state).await {
+            Ok(p) => p,
+            Err(r) => return r,
+        };
+        match page.$($call)*.await {
+            Ok(val) => Response::ok_data(ResponseData::Eval { value: val }),
+            Err(e) => Response::error(e.to_string()),
+        }
+    }};
+}
+
 /// Execute a page method returning `Result<String>` → `ResponseData::Text`.
 ///
 /// With a target: `page_text!(state, "target", method(args))` — applies AI-friendly rewrite.
@@ -234,44 +246,67 @@ macro_rules! page_text {
 // Dispatch
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::cognitive_complexity, clippy::large_stack_frames)] // Pure routing function — splitting would reduce clarity; stack size is dominated by the largest async arm.
+#[allow(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    clippy::large_stack_frames
+)]
 async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> Response {
     match req {
-        // Connection
+        // -- Connection -------------------------------------------------------
         Request::Connect { target } => cmd_connect(state, &target).await,
 
-        // Navigation
+        // -- Navigation -------------------------------------------------------
         Request::Navigate { url, wait } => cmd_navigate(state, &url, wait).await,
         Request::Back => page_ok!(state, go_back()),
         Request::Forward => page_ok!(state, go_forward()),
         Request::Reload => page_ok!(state, reload()),
 
-        // Observation
+        // -- Observation ------------------------------------------------------
         Request::Snapshot { options } => cmd_snapshot(state, options).await,
         Request::Screenshot {
+            full_page,
             selector,
             format,
             quality,
-            ..
-        } => cmd_screenshot(state, selector.as_deref(), &format, quality).await,
-        Request::Eval { expression } => cmd_eval(state, &expression).await,
+        } => {
+            let page = match get_page(state).await {
+                Ok(p) => p,
+                Err(r) => return r,
+            };
+            match page
+                .screenshot(full_page, selector.as_deref(), &format, Some(quality))
+                .await
+            {
+                Ok(bytes) => {
+                    let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                    Response::ok_data(ResponseData::Screenshot { data })
+                }
+                Err(e) => Response::error(format!("screenshot failed: {e}")),
+            }
+        }
+        Request::Eval { expression } => page_eval!(state, eval(&expression)),
 
-        // Interaction — pass target for AI-friendly error rewriting
+        // -- Interaction ------------------------------------------------------
         Request::Click {
             target,
             button,
             click_count,
-        } => cmd_click(state, &target, button, click_count).await,
+        } => {
+            page_ok!(state, &target, click_with(&target, button, click_count))
+        }
         Request::DblClick { target } => page_ok!(state, &target, dblclick(&target)),
         Request::Fill { target, value } => page_ok!(state, &target, fill(&target, &value)),
         Request::Type {
             target,
             text,
             delay_ms,
-        } => cmd_type(state, target.as_deref(), &text, delay_ms).await,
+        } => {
+            page_ok!(state, type_with_delay(target.as_deref(), &text, delay_ms))
+        }
         Request::Press { key } => page_ok!(state, key_press(&key)),
         Request::Select { target, values } => {
-            cmd_select(state, &target, &values).await
+            page_ok!(state, &target, select_options(&target, &values))
         }
         Request::Check { target } => page_ok!(state, &target, check(&target)),
         Request::Uncheck { target } => page_ok!(state, &target, uncheck(&target)),
@@ -281,29 +316,48 @@ async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> Response {
             direction,
             pixels,
             target,
-        } => page_ok!(state, scroll(direction, pixels, target.as_deref())),
+        } => {
+            page_ok!(state, scroll(direction, pixels, target.as_deref()))
+        }
+        Request::SetValue { target, value } => {
+            page_ok!(state, &target, set_value(&target, &value))
+        }
 
-        // Frame (iframe) support
+        // -- Frame (iframe) ---------------------------------------------------
         Request::Frame { selector } => cmd_frame(state, &selector).await,
         Request::MainFrame => cmd_main_frame(state).await,
 
-        // Raw keyboard
+        // -- Raw keyboard -----------------------------------------------------
         Request::KeyDown { key } => page_ok!(state, key_down(&key)),
         Request::KeyUp { key } => page_ok!(state, key_up(&key)),
         Request::InsertText { text } => page_ok!(state, insert_text(&text)),
 
-        // File / DOM manipulation
+        // -- File / DOM -------------------------------------------------------
         Request::Upload { target, files } => page_ok!(state, &target, upload(&target, &files)),
         Request::Drag { source, target } => page_ok!(state, &source, drag(&source, &target)),
         Request::Clear { target } => page_ok!(state, &target, clear(&target)),
         Request::ScrollIntoView { target } => {
             page_ok!(state, &target, scroll_into_view(&target))
         }
-        Request::BoundingBox { target } => cmd_bounding_box(state, &target).await,
+        Request::BoundingBox { target } => {
+            let page = match get_page(state).await {
+                Ok(p) => p,
+                Err(r) => return r,
+            };
+            match page.bounding_box(&target).await {
+                Ok((x, y, w, h)) => Response::ok_data(ResponseData::BoundingBox {
+                    x,
+                    y,
+                    width: w,
+                    height: h,
+                }),
+                Err(e) => Response::error(e.ai_friendly(&target).to_string()),
+            }
+        }
         Request::SetContent { html } => page_ok!(state, set_content(&html)),
         Request::Pdf { path } => page_ok!(state, pdf(&path)),
 
-        // Network interception
+        // -- Network interception ---------------------------------------------
         Request::Route {
             pattern,
             action,
@@ -316,7 +370,7 @@ async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> Response {
             cmd_requests(state, action.as_deref(), filter.as_deref()).await
         }
 
-        // Download handling
+        // -- Download ---------------------------------------------------------
         Request::SetDownloadPath { path } => cmd_set_download_path(state, &path).await,
         Request::Downloads { action } => cmd_downloads(state, action.as_deref()).await,
         Request::WaitForDownload { path, timeout_ms } => {
@@ -326,78 +380,92 @@ async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> Response {
             cmd_response_body(state, &url, timeout_ms).await
         }
 
-        // Clipboard
-        Request::ClipboardRead => cmd_clipboard_read(state).await,
-        Request::ClipboardWrite { text } => cmd_clipboard_write(state, &text).await,
+        // -- Clipboard --------------------------------------------------------
+        Request::ClipboardRead => page_text!(state, clipboard_read()),
+        Request::ClipboardWrite { text } => page_ok!(state, clipboard_write(&text)),
 
-        // Environment emulation
-        Request::Viewport { width, height } => cmd_viewport(state, width, height).await,
+        // -- Environment emulation --------------------------------------------
+        Request::Viewport { width, height } => page_ok!(state, set_viewport(width, height)),
         Request::EmulateMedia {
             media,
             color_scheme,
             reduced_motion,
             forced_colors,
         } => {
-            cmd_emulate_media(
+            page_ok!(
                 state,
-                media.as_deref(),
-                color_scheme.as_deref(),
-                reduced_motion.as_deref(),
-                forced_colors.as_deref(),
+                emulate_media(
+                    media.as_deref(),
+                    color_scheme.as_deref(),
+                    reduced_motion.as_deref(),
+                    forced_colors.as_deref(),
+                )
             )
-            .await
         }
-        Request::Offline { offline } => cmd_offline(state, offline).await,
-        Request::ExtraHeaders { headers_json } => cmd_extra_headers(state, &headers_json).await,
+        Request::Offline { offline } => page_ok!(state, set_offline(offline)),
+        Request::ExtraHeaders { headers_json } => {
+            let map: serde_json::Map<String, serde_json::Value> =
+                match serde_json::from_str(&headers_json) {
+                    Ok(m) => m,
+                    Err(e) => return Response::error(format!("invalid headers JSON: {e}")),
+                };
+            page_ok!(state, set_extra_headers(map))
+        }
         Request::Geolocation {
             latitude,
             longitude,
             accuracy,
-        } => cmd_geolocation(state, latitude, longitude, accuracy).await,
+        } => {
+            page_ok!(state, set_geolocation(latitude, longitude, accuracy))
+        }
         Request::Credentials { username, password } => {
-            cmd_credentials(state, &username, &password).await
+            page_ok!(state, set_credentials(&username, &password))
         }
-        Request::UserAgent { user_agent } => cmd_user_agent(state, &user_agent).await,
-        Request::Timezone { timezone_id } => cmd_timezone(state, &timezone_id).await,
-        Request::Locale { locale } => cmd_locale(state, &locale).await,
+        Request::UserAgent { user_agent } => page_ok!(state, set_user_agent(&user_agent)),
+        Request::Timezone { timezone_id } => page_ok!(state, set_timezone(&timezone_id)),
+        Request::Locale { locale } => page_ok!(state, set_locale(&locale)),
         Request::Permissions { permissions, grant } => {
-            cmd_permissions(state, &permissions, grant).await
+            page_ok!(state, set_permissions(&permissions, grant))
         }
-        Request::BringToFront => cmd_bring_to_front(state).await,
+        Request::BringToFront => page_ok!(state, bring_to_front()),
 
-        // Script injection
-        Request::AddInitScript { script } => cmd_add_init_script(state, &script).await,
+        // -- Script injection -------------------------------------------------
+        Request::AddInitScript { script } => page_ok!(state, add_init_script(&script)),
         Request::AddScript { content, url } => {
-            cmd_add_script(state, content.as_deref(), url.as_deref()).await
+            page_ok!(state, add_script(content.as_deref(), url.as_deref()))
         }
         Request::AddStyle { content, url } => {
-            cmd_add_style(state, content.as_deref(), url.as_deref()).await
+            page_ok!(state, add_style(content.as_deref(), url.as_deref()))
         }
         Request::Dispatch {
             target,
             event,
             event_init,
-        } => cmd_dispatch(state, &target, &event, event_init.as_deref()).await,
+        } => {
+            page_ok!(
+                state,
+                dispatch_event(&target, &event, event_init.as_deref())
+            )
+        }
 
-        // Misc interaction / queries
-        Request::Styles { target } => cmd_styles(state, &target).await,
-        Request::SelectAll { target } => cmd_select_all(state, &target).await,
-        Request::Highlight { target } => cmd_highlight(state, &target).await,
-        Request::MouseMove { x, y } => cmd_mouse_move(state, x, y).await,
-        Request::MouseDown { button } => cmd_mouse_down(state, button).await,
-        Request::MouseUp { button } => cmd_mouse_up(state, button).await,
+        // -- Misc interaction / queries ---------------------------------------
+        Request::Styles { target } => page_eval!(state, get_styles(&target)),
+        Request::SelectAll { target } => page_ok!(state, select_all_text(&target)),
+        Request::Highlight { target } => page_ok!(state, &target, highlight(&target)),
+        Request::MouseMove { x, y } => page_ok!(state, mouse_move(x, y)),
+        Request::MouseDown { button } => page_ok!(state, mouse_down(button)),
+        Request::MouseUp { button } => page_ok!(state, mouse_up(button)),
         Request::Wheel {
             delta_x,
             delta_y,
             selector,
-        } => cmd_wheel(state, delta_x, delta_y, selector.as_deref()).await,
-        Request::Tap { target } => cmd_tap(state, &target).await,
-        Request::SetValue { target, value } => {
-            cmd_set_value(state, &target, &value).await
+        } => {
+            page_ok!(state, wheel(delta_x, delta_y, selector.as_deref()))
         }
+        Request::Tap { target } => page_ok!(state, &target, tap(&target)),
 
-        // Query — pass target for AI-friendly error rewriting
-        Request::GetText { target } => cmd_text(state, target.as_deref()).await,
+        // -- Query ------------------------------------------------------------
+        Request::GetText { target } => page_text!(state, get_text(target.as_deref())),
         Request::GetUrl => page_text!(state, url()),
         Request::GetTitle => page_text!(state, title()),
         Request::GetHtml { target } => page_text!(state, &target, get_html(&target)),
@@ -406,48 +474,148 @@ async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> Response {
             page_text!(state, &target, get_attribute(&target, &attribute))
         }
 
-        // State checks
-        Request::IsVisible { target } => cmd_bool_check(state, &target, "is_visible").await,
-        Request::IsEnabled { target } => cmd_bool_check(state, &target, "is_enabled").await,
-        Request::IsChecked { target } => cmd_bool_check(state, &target, "is_checked").await,
-        Request::Count { selector } => cmd_count(state, &selector).await,
+        // -- State checks -----------------------------------------------------
+        Request::IsVisible { target } => {
+            let page = match get_page(state).await {
+                Ok(p) => p,
+                Err(r) => return r,
+            };
+            match page.is_visible(&target).await {
+                Ok(val) => Response::ok_data(ResponseData::Text {
+                    text: val.to_string(),
+                }),
+                Err(e) => Response::error(e.ai_friendly(&target).to_string()),
+            }
+        }
+        Request::IsEnabled { target } => {
+            let page = match get_page(state).await {
+                Ok(p) => p,
+                Err(r) => return r,
+            };
+            match page.is_enabled(&target).await {
+                Ok(val) => Response::ok_data(ResponseData::Text {
+                    text: val.to_string(),
+                }),
+                Err(e) => Response::error(e.ai_friendly(&target).to_string()),
+            }
+        }
+        Request::IsChecked { target } => {
+            let page = match get_page(state).await {
+                Ok(p) => p,
+                Err(r) => return r,
+            };
+            match page.is_checked(&target).await {
+                Ok(val) => Response::ok_data(ResponseData::Text {
+                    text: val.to_string(),
+                }),
+                Err(e) => Response::error(e.ai_friendly(&target).to_string()),
+            }
+        }
+        Request::Count { selector } => {
+            let page = match get_page(state).await {
+                Ok(p) => p,
+                Err(r) => return r,
+            };
+            match page.count(&selector).await {
+                Ok(n) => Response::ok_data(ResponseData::Text {
+                    text: n.to_string(),
+                }),
+                Err(e) => Response::error(e.ai_friendly(&selector).to_string()),
+            }
+        }
 
-        // Wait
+        // -- Wait -------------------------------------------------------------
         Request::Wait { condition } => cmd_wait(state, condition).await,
 
-        // Dialog handling
-        Request::DialogMessage => cmd_dialog_message(state).await,
+        // -- Dialog -----------------------------------------------------------
+        Request::DialogMessage => {
+            let page = match get_page(state).await {
+                Ok(p) => p,
+                Err(r) => return r,
+            };
+            page.dialog_message().await.map_or_else(
+                || {
+                    Response::ok_data(ResponseData::Text {
+                        text: "(no dialog)".into(),
+                    })
+                },
+                |info| {
+                    let value = serde_json::to_value(&info).unwrap_or_default();
+                    Response::ok_data(ResponseData::Eval { value })
+                },
+            )
+        }
         Request::DialogAccept { prompt_text } => {
             page_ok!(state, dialog_accept(prompt_text.as_deref()))
         }
         Request::DialogDismiss => page_ok!(state, dialog_dismiss()),
 
-        // Cookie / Storage
-        Request::GetCookies => cmd_get_cookies(state).await,
+        // -- Cookie / Storage -------------------------------------------------
+        Request::GetCookies => page_eval!(state, get_cookies()),
         Request::SetCookie { cookie } => page_ok!(state, set_cookie(&cookie)),
         Request::ClearCookies => page_ok!(state, clear_cookies()),
-        Request::GetStorage { key, session } => {
-            page_text!(state, get_storage(&key, session))
-        }
+        Request::GetStorage { key, session } => page_text!(state, get_storage(&key, session)),
         Request::SetStorage {
             key,
             value,
             session,
-        } => page_ok!(state, set_storage(&key, &value, session)),
+        } => {
+            page_ok!(state, set_storage(&key, &value, session))
+        }
         Request::ClearStorage { session } => page_ok!(state, clear_storage(session)),
 
-        // Tab management
+        // -- Tab management ---------------------------------------------------
         Request::TabNew { url } => cmd_tab_new(state, url.as_deref()).await,
         Request::TabList => cmd_tab_list(state).await,
         Request::TabSelect { index } => cmd_tab_select(state, index).await,
         Request::TabClose { index } => cmd_tab_close(state, index).await,
 
-        // Debug
-        Request::Console { clear } => cmd_console(state, clear).await,
-        Request::Errors { clear } => cmd_errors(state, clear).await,
+        // -- Debug ------------------------------------------------------------
+        Request::Console { clear } => {
+            let page = match get_page(state).await {
+                Ok(p) => p,
+                Err(r) => return r,
+            };
+            let logs = page.take_console_logs().await;
+            if clear {
+                return Response::ok_data(ResponseData::Text {
+                    text: format!("{} console entries cleared", logs.len()),
+                });
+            }
+            Response::ok_data(ResponseData::Logs {
+                entries: serde_json::to_value(&logs).unwrap_or_default(),
+            })
+        }
+        Request::Errors { clear } => {
+            let page = match get_page(state).await {
+                Ok(p) => p,
+                Err(r) => return r,
+            };
+            let errors = page.take_js_errors().await;
+            if clear {
+                return Response::ok_data(ResponseData::Text {
+                    text: format!("{} error entries cleared", errors.len()),
+                });
+            }
+            Response::ok_data(ResponseData::Logs {
+                entries: serde_json::to_value(&errors).unwrap_or_default(),
+            })
+        }
 
-        // Lifecycle
-        Request::Status => cmd_status(state).await,
+        // -- Lifecycle --------------------------------------------------------
+        Request::Status => {
+            let guard = state.lock().await;
+            let browser_running = guard.browser.is_some();
+            let page_url = if let Some(page) = guard.pages.get(guard.active_tab) {
+                page.url().await.ok()
+            } else {
+                None
+            };
+            Response::ok_data(ResponseData::Status {
+                browser_running,
+                page_url,
+            })
+        }
         Request::Close => Response::ok(),
     }
 }
@@ -545,34 +713,16 @@ async fn resolve_cdp_endpoint(target: &str) -> crate::Result<String> {
             "cannot reach Chrome at {version_url} — is Chrome running with --remote-debugging-port? ({e})"
         ))
     })?;
-    let body: serde_json::Value = resp.json().await.map_err(|e| {
-        Error::Browser(format!("invalid JSON from {version_url}: {e}"))
-    })?;
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| Error::Browser(format!("invalid JSON from {version_url}: {e}")))?;
     body["webSocketDebuggerUrl"]
         .as_str()
         .map(String::from)
         .ok_or_else(|| {
-            Error::Browser(
-                "webSocketDebuggerUrl not found in /json/version response".into(),
-            )
+            Error::Browser("webSocketDebuggerUrl not found in /json/version response".into())
         })
-}
-
-/// Get bounding box of an element.
-async fn cmd_bounding_box(state: &Arc<Mutex<DaemonState>>, target: &str) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-    match page.bounding_box(target).await {
-        Ok((x, y, w, h)) => Response::ok_data(ResponseData::BoundingBox {
-            x,
-            y,
-            width: w,
-            height: h,
-        }),
-        Err(e) => Response::error(format!("{}", e.ai_friendly(target))),
-    }
 }
 
 /// Switch execution context to a child frame.
@@ -847,926 +997,11 @@ async fn cmd_requests(
     })
 }
 
-/// Grant clipboard permissions via CDP `Browser.setPermission`.
-async fn grant_clipboard_permission(page: &Page) {
-    let origin = page.url().await.unwrap_or_default();
-    let cmd = chromiumoxide::cdp::browser_protocol::browser::SetPermissionParams::builder()
-        .permission(
-            chromiumoxide::cdp::browser_protocol::browser::PermissionDescriptor::new("clipboard-read"),
-        )
-        .setting(chromiumoxide::cdp::browser_protocol::browser::PermissionSetting::Granted)
-        .origin(origin.clone())
-        .build();
-    if let Ok(cmd) = cmd {
-        let _ = page.inner().execute(cmd).await;
-    }
-    let cmd2 = chromiumoxide::cdp::browser_protocol::browser::SetPermissionParams::builder()
-        .permission(
-            chromiumoxide::cdp::browser_protocol::browser::PermissionDescriptor::new("clipboard-write"),
-        )
-        .setting(chromiumoxide::cdp::browser_protocol::browser::PermissionSetting::Granted)
-        .origin(origin)
-        .build();
-    if let Ok(cmd2) = cmd2 {
-        let _ = page.inner().execute(cmd2).await;
-    }
-}
-
-/// Read text from the system clipboard via JS `navigator.clipboard.readText()`.
-async fn cmd_clipboard_read(state: &Arc<Mutex<DaemonState>>) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    grant_clipboard_permission(&page).await;
-
-    let val: serde_json::Value = page
-        .eval("navigator.clipboard.readText()")
-        .await
-        .unwrap_or_default();
-    let text = val.as_str().unwrap_or("").to_owned();
-
-    Response::ok_data(ResponseData::Text { text })
-}
-
-/// Write text to the system clipboard via JS `navigator.clipboard.writeText()`.
-async fn cmd_clipboard_write(state: &Arc<Mutex<DaemonState>>, text: &str) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    grant_clipboard_permission(&page).await;
-
-    let escaped = text.replace('\\', "\\\\").replace('`', "\\`").replace('$', "\\$");
-    let js = format!("navigator.clipboard.writeText(`{escaped}`)");
-    if let Err(e) = page.eval(&js).await {
-        return Response::error(format!("clipboard write failed: {e}"));
-    }
-
-    Response::ok_data(ResponseData::Text {
-        text: "clipboard updated".into(),
-    })
-}
-
 // ---------------------------------------------------------------------------
-// Multi-select handler
+// Download handlers (require DaemonState)
 // ---------------------------------------------------------------------------
 
-/// Select one or more dropdown options by value.
-async fn cmd_select(
-    state: &Arc<Mutex<DaemonState>>,
-    target: &str,
-    values: &[String],
-) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-    // Select each value; for single-value, just use the first.
-    for v in values {
-        if let Err(e) = page.select_option(target, v).await {
-            return Response::error(e.ai_friendly(target).to_string());
-        }
-    }
-    Response::ok()
-}
-
-// ---------------------------------------------------------------------------
-// Enhanced click handler
-// ---------------------------------------------------------------------------
-
-/// Click with configurable button and click count.
-async fn cmd_click(
-    state: &Arc<Mutex<DaemonState>>,
-    target: &str,
-    button: MouseButton,
-    click_count: u32,
-) -> Response {
-    use chromiumoxide::cdp::browser_protocol::input::{
-        DispatchMouseEventParams, DispatchMouseEventType,
-        MouseButton as CdpMouseButton,
-    };
-
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    // For default left-click with count=1, use the simple path
-    if matches!(button, MouseButton::Left) && click_count == 1 {
-        return match page.click(target).await {
-            Ok(()) => Response::ok(),
-            Err(e) => Response::error(e.ai_friendly(target).to_string()),
-        };
-    }
-
-    let center = match page.resolve_target_center(target).await {
-        Ok(c) => c,
-        Err(e) => return Response::error(e.ai_friendly(target).to_string()),
-    };
-
-    let mb = match button {
-        MouseButton::Right => CdpMouseButton::Right,
-        MouseButton::Middle => CdpMouseButton::Middle,
-        MouseButton::Left => CdpMouseButton::Left,
-    };
-
-    for i in 0..click_count {
-        let count = i64::from(i + 1);
-        let press = DispatchMouseEventParams::builder()
-            .r#type(DispatchMouseEventType::MousePressed)
-            .button(mb.clone())
-            .x(center.x)
-            .y(center.y)
-            .click_count(count)
-            .build();
-        if let Ok(p) = press
-            && let Err(e) = page.inner().execute(p).await
-        {
-            return Response::error(format!("click failed: {e}"));
-        }
-        let release = DispatchMouseEventParams::builder()
-            .r#type(DispatchMouseEventType::MouseReleased)
-            .button(mb.clone())
-            .x(center.x)
-            .y(center.y)
-            .click_count(count)
-            .build();
-        if let Ok(r) = release
-            && let Err(e) = page.inner().execute(r).await
-        {
-            return Response::error(format!("click release failed: {e}"));
-        }
-    }
-
-    Response::ok()
-}
-
-// ---------------------------------------------------------------------------
-// Environment emulation handlers
-// ---------------------------------------------------------------------------
-
-/// Set viewport size via CDP `Emulation.setDeviceMetricsOverride`.
-async fn cmd_viewport(state: &Arc<Mutex<DaemonState>>, width: u32, height: u32) -> Response {
-    use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
-
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    let Ok(params) = SetDeviceMetricsOverrideParams::builder()
-        .width(width)
-        .height(height)
-        .device_scale_factor(0.0)
-        .mobile(false)
-        .build()
-    else {
-        return Response::error("failed to build viewport params");
-    };
-
-    if let Err(e) = page.inner().execute(params).await {
-        return Response::error(format!("viewport failed: {e}"));
-    }
-
-    Response::ok_data(ResponseData::Text {
-        text: format!("viewport set to {width}x{height}"),
-    })
-}
-
-/// Emulate media features via CDP `Emulation.setEmulatedMedia`.
-async fn cmd_emulate_media(
-    state: &Arc<Mutex<DaemonState>>,
-    media: Option<&str>,
-    color_scheme: Option<&str>,
-    reduced_motion: Option<&str>,
-    forced_colors: Option<&str>,
-) -> Response {
-    use chromiumoxide::cdp::browser_protocol::emulation::{
-        MediaFeature, SetEmulatedMediaParams,
-    };
-
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    let mut params = SetEmulatedMediaParams::default();
-    if let Some(m) = media {
-        params.media = Some(m.to_owned());
-    }
-    let mut features = Vec::new();
-    if let Some(cs) = color_scheme {
-        features.push(MediaFeature::new("prefers-color-scheme", cs));
-    }
-    if let Some(rm) = reduced_motion {
-        features.push(MediaFeature::new("prefers-reduced-motion", rm));
-    }
-    if let Some(fc) = forced_colors {
-        features.push(MediaFeature::new("forced-colors", fc));
-    }
-    if !features.is_empty() {
-        params.features = Some(features);
-    }
-
-    if let Err(e) = page.inner().execute(params).await {
-        return Response::error(format!("emulate media failed: {e}"));
-    }
-
-    Response::ok_data(ResponseData::Text {
-        text: "media emulation updated".into(),
-    })
-}
-
-/// Toggle offline mode via JS-based network interception.
-async fn cmd_offline(state: &Arc<Mutex<DaemonState>>, offline: bool) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    let js = if offline {
-        // Monkey-patch fetch to reject and block XHR
-        r"(() => {
-            if (!window.__brother_offline) {
-                window.__brother_offline = true;
-                const F = window.fetch;
-                window.__brother_orig_fetch = F;
-                window.fetch = function() {
-                    if (window.__brother_offline) return Promise.reject(new TypeError('Network request failed (offline mode)'));
-                    return F.apply(this, arguments);
-                };
-            } else {
-                window.__brother_offline = true;
-            }
-        })()"
-    } else {
-        r"(() => {
-            window.__brother_offline = false;
-        })()"
-    };
-
-    if let Err(e) = page.eval(js).await {
-        return Response::error(format!("offline toggle failed: {e}"));
-    }
-
-    Response::ok_data(ResponseData::Text {
-        text: format!("offline mode: {offline}"),
-    })
-}
-
-/// Set extra HTTP headers via CDP `Network.setExtraHTTPHeaders`.
-async fn cmd_extra_headers(state: &Arc<Mutex<DaemonState>>, headers_json: &str) -> Response {
-    use chromiumoxide::cdp::browser_protocol::network::SetExtraHttpHeadersParams;
-
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    let map: std::collections::HashMap<String, String> = match serde_json::from_str(headers_json) {
-        Ok(m) => m,
-        Err(e) => return Response::error(format!("invalid headers JSON: {e}")),
-    };
-
-    let json_map: serde_json::Map<String, serde_json::Value> = map
-        .into_iter()
-        .map(|(k, v)| (k, serde_json::Value::String(v)))
-        .collect();
-    let headers = chromiumoxide::cdp::browser_protocol::network::Headers::new(json_map);
-    let params = SetExtraHttpHeadersParams::new(headers);
-
-    if let Err(e) = page.inner().execute(params).await {
-        return Response::error(format!("set headers failed: {e}"));
-    }
-
-    Response::ok_data(ResponseData::Text {
-        text: "extra headers set".into(),
-    })
-}
-
-/// Override geolocation via CDP `Emulation.setGeolocationOverride`.
-async fn cmd_geolocation(
-    state: &Arc<Mutex<DaemonState>>,
-    latitude: f64,
-    longitude: f64,
-    accuracy: f64,
-) -> Response {
-    use chromiumoxide::cdp::browser_protocol::emulation::SetGeolocationOverrideParams;
-
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    let params = SetGeolocationOverrideParams {
-        latitude: Some(latitude),
-        longitude: Some(longitude),
-        accuracy: Some(accuracy),
-        ..Default::default()
-    };
-
-    if let Err(e) = page.inner().execute(params).await {
-        return Response::error(format!("geolocation override failed: {e}"));
-    }
-
-    Response::ok_data(ResponseData::Text {
-        text: format!("geolocation set to ({latitude}, {longitude})"),
-    })
-}
-
-/// Set HTTP Basic Auth credentials via CDP `Network.setExtraHTTPHeaders`.
-async fn cmd_credentials(
-    state: &Arc<Mutex<DaemonState>>,
-    username: &str,
-    password: &str,
-) -> Response {
-    use chromiumoxide::cdp::browser_protocol::network::SetExtraHttpHeadersParams;
-
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    let encoded = base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"));
-    let mut map = serde_json::Map::new();
-    map.insert(
-        "Authorization".to_owned(),
-        serde_json::Value::String(format!("Basic {encoded}")),
-    );
-
-    let headers = chromiumoxide::cdp::browser_protocol::network::Headers::new(map);
-    let params = SetExtraHttpHeadersParams::new(headers);
-
-    if let Err(e) = page.inner().execute(params).await {
-        return Response::error(format!("credentials failed: {e}"));
-    }
-
-    Response::ok_data(ResponseData::Text {
-        text: "HTTP credentials set".into(),
-    })
-}
-
-// ---------------------------------------------------------------------------
-// P4.2: New environment / interaction handlers
-// ---------------------------------------------------------------------------
-
-/// Override user-agent string via CDP `Network.setUserAgentOverride`.
-async fn cmd_user_agent(state: &Arc<Mutex<DaemonState>>, user_agent: &str) -> Response {
-    use chromiumoxide::cdp::browser_protocol::network::SetUserAgentOverrideParams;
-
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    let params = SetUserAgentOverrideParams::new(user_agent.to_owned());
-    if let Err(e) = page.inner().execute(params).await {
-        return Response::error(format!("user-agent override failed: {e}"));
-    }
-
-    Response::ok_data(ResponseData::Text {
-        text: format!("user-agent set to: {user_agent}"),
-    })
-}
-
-/// Override timezone via CDP `Emulation.setTimezoneOverride`.
-async fn cmd_timezone(state: &Arc<Mutex<DaemonState>>, timezone_id: &str) -> Response {
-    use chromiumoxide::cdp::browser_protocol::emulation::SetTimezoneOverrideParams;
-
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    let params = SetTimezoneOverrideParams::new(timezone_id.to_owned());
-    if let Err(e) = page.inner().execute(params).await {
-        return Response::error(format!("timezone override failed: {e}"));
-    }
-
-    Response::ok_data(ResponseData::Text {
-        text: format!("timezone set to: {timezone_id}"),
-    })
-}
-
-/// Override locale via JS `navigator.language` override and CDP intl hint.
-async fn cmd_locale(state: &Arc<Mutex<DaemonState>>, locale: &str) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    // Override navigator.language and navigator.languages via JS
-    let js = format!(
-        "Object.defineProperty(navigator, 'language', {{ get: () => '{}' }}); \
-         Object.defineProperty(navigator, 'languages', {{ get: () => ['{}'] }});",
-        locale.replace('\'', "\\'"),
-        locale.replace('\'', "\\'"),
-    );
-    if let Err(e) = page.eval(&js).await {
-        return Response::error(format!("locale override failed: {e}"));
-    }
-
-    Response::ok_data(ResponseData::Text {
-        text: format!("locale set to: {locale}"),
-    })
-}
-
-/// Grant or revoke browser permissions via CDP `Browser.setPermission`.
-async fn cmd_permissions(
-    state: &Arc<Mutex<DaemonState>>,
-    permissions: &[String],
-    grant: bool,
-) -> Response {
-    use chromiumoxide::cdp::browser_protocol::browser::{
-        PermissionDescriptor, PermissionSetting, SetPermissionParams,
-    };
-
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    let setting = if grant {
-        PermissionSetting::Granted
-    } else {
-        PermissionSetting::Denied
-    };
-
-    for perm in permissions {
-        let descriptor = PermissionDescriptor::new(perm.clone());
-        let params = SetPermissionParams::new(descriptor, setting.clone());
-        if let Err(e) = page.inner().execute(params).await {
-            return Response::error(format!("permission '{perm}' failed: {e}"));
-        }
-    }
-
-    let action = if grant { "granted" } else { "denied" };
-    Response::ok_data(ResponseData::Text {
-        text: format!("{action}: {}", permissions.join(", ")),
-    })
-}
-
-/// Bring the current page to front via CDP `Page.bringToFront`.
-async fn cmd_bring_to_front(state: &Arc<Mutex<DaemonState>>) -> Response {
-    use chromiumoxide::cdp::browser_protocol::page::BringToFrontParams;
-
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    if let Err(e) = page.inner().execute(BringToFrontParams::default()).await {
-        return Response::error(format!("bring to front failed: {e}"));
-    }
-
-    Response::ok()
-}
-
-/// Scroll with the mouse wheel via CDP `Input.dispatchMouseEvent`.
-async fn cmd_wheel(
-    state: &Arc<Mutex<DaemonState>>,
-    delta_x: f64,
-    delta_y: f64,
-    selector: Option<&str>,
-) -> Response {
-    use chromiumoxide::cdp::browser_protocol::input::{
-        DispatchMouseEventParams, DispatchMouseEventType,
-    };
-
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    // If selector given, hover it first so the wheel targets that element.
-    if let Some(sel) = selector
-        && let Err(e) = page.hover(sel).await
-    {
-        return Response::error(e.ai_friendly(sel).to_string());
-    }
-
-    let params = DispatchMouseEventParams::builder()
-        .r#type(DispatchMouseEventType::MouseWheel)
-        .x(0)
-        .y(0)
-        .delta_x(delta_x)
-        .delta_y(delta_y)
-        .build();
-
-    match params {
-        Ok(p) => {
-            if let Err(e) = page.inner().execute(p).await {
-                return Response::error(format!("wheel failed: {e}"));
-            }
-        }
-        Err(e) => return Response::error(format!("wheel params failed: {e}")),
-    }
-
-    Response::ok()
-}
-
-/// Touch-tap an element by resolving its center and dispatching touch events.
-async fn cmd_tap(state: &Arc<Mutex<DaemonState>>, target: &str) -> Response {
-    use chromiumoxide::cdp::browser_protocol::input::{
-        DispatchTouchEventParams, DispatchTouchEventType, TouchPoint,
-    };
-
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    let center = match page.resolve_target_center(target).await {
-        Ok(c) => c,
-        Err(e) => return Response::error(e.ai_friendly(target).to_string()),
-    };
-
-    let point = TouchPoint::new(center.x, center.y);
-
-    // Touch start
-    let start = DispatchTouchEventParams::new(
-        DispatchTouchEventType::TouchStart,
-        vec![point.clone()],
-    );
-    if let Err(e) = page.inner().execute(start).await {
-        return Response::error(format!("tap failed (touchStart): {e}"));
-    }
-
-    // Touch end
-    let end = DispatchTouchEventParams::new(DispatchTouchEventType::TouchEnd, vec![]);
-    if let Err(e) = page.inner().execute(end).await {
-        return Response::error(format!("tap failed (touchEnd): {e}"));
-    }
-
-    Response::ok()
-}
-
-/// Set an input value directly (no events) via JS.
-async fn cmd_set_value(
-    state: &Arc<Mutex<DaemonState>>,
-    target: &str,
-    value: &str,
-) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    let escaped = value.replace('\\', "\\\\").replace('\'', "\\'");
-    let js = format!(
-        "(() => {{ const el = document.querySelector('{sel}'); \
-         if (!el) throw new Error('Element not found: {sel}'); \
-         el.value = '{val}'; }})() ",
-        sel = target.replace('\'', "\\'"),
-        val = escaped,
-    );
-
-    if let Err(e) = page.eval(&js).await {
-        return Response::error(format!("set value failed: {e}"));
-    }
-
-    Response::ok()
-}
-
-// ---------------------------------------------------------------------------
-// Script injection handlers
-// ---------------------------------------------------------------------------
-
-/// Add a script to evaluate on every new document via CDP `Page.addScriptToEvaluateOnNewDocument`.
-async fn cmd_add_init_script(state: &Arc<Mutex<DaemonState>>, script: &str) -> Response {
-    use chromiumoxide::cdp::browser_protocol::page::AddScriptToEvaluateOnNewDocumentParams;
-
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    let params = AddScriptToEvaluateOnNewDocumentParams::new(script.to_owned());
-    if let Err(e) = page.inner().execute(params).await {
-        return Response::error(format!("add init script failed: {e}"));
-    }
-
-    Response::ok_data(ResponseData::Text {
-        text: "init script added".into(),
-    })
-}
-
-/// Inject a `<script>` tag into the current page via JS.
-async fn cmd_add_script(
-    state: &Arc<Mutex<DaemonState>>,
-    content: Option<&str>,
-    url: Option<&str>,
-) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    let js = match (content, url) {
-        (Some(c), _) => {
-            let escaped = c.replace('\\', "\\\\").replace('`', "\\`").replace('$', "\\$");
-            format!(
-                r"(() => {{ const s = document.createElement('script'); s.textContent = `{escaped}`; document.head.appendChild(s); }})()"
-            )
-        }
-        (_, Some(u)) => {
-            let escaped = u.replace('\\', "\\\\").replace('\'', "\\'");
-            format!(
-                r"(() => {{ const s = document.createElement('script'); s.src = '{escaped}'; document.head.appendChild(s); }})()"
-            )
-        }
-        _ => return Response::error("either content or url is required"),
-    };
-
-    if let Err(e) = page.eval(&js).await {
-        return Response::error(format!("add script failed: {e}"));
-    }
-
-    Response::ok_data(ResponseData::Text {
-        text: "script injected".into(),
-    })
-}
-
-/// Inject a `<style>` or `<link>` tag into the current page via JS.
-async fn cmd_add_style(
-    state: &Arc<Mutex<DaemonState>>,
-    content: Option<&str>,
-    url: Option<&str>,
-) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    let js = match (content, url) {
-        (Some(c), _) => {
-            let escaped = c.replace('\\', "\\\\").replace('`', "\\`").replace('$', "\\$");
-            format!(
-                r"(() => {{ const s = document.createElement('style'); s.textContent = `{escaped}`; document.head.appendChild(s); }})()"
-            )
-        }
-        (_, Some(u)) => {
-            let escaped = u.replace('\\', "\\\\").replace('\'', "\\'");
-            format!(
-                r"(() => {{ const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = '{escaped}'; document.head.appendChild(l); }})()"
-            )
-        }
-        _ => return Response::error("either content or url is required"),
-    };
-
-    if let Err(e) = page.eval(&js).await {
-        return Response::error(format!("add style failed: {e}"));
-    }
-
-    Response::ok_data(ResponseData::Text {
-        text: "style injected".into(),
-    })
-}
-
-/// Dispatch a DOM event on an element via JS.
-async fn cmd_dispatch(
-    state: &Arc<Mutex<DaemonState>>,
-    target: &str,
-    event: &str,
-    event_init: Option<&str>,
-) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    let escaped_event = event.replace('\\', "\\\\").replace('\'', "\\'");
-    let init_arg = event_init.map_or_else(|| "{}".to_owned(), ToOwned::to_owned);
-    let escaped_sel = target.replace('\\', "\\\\").replace('\'', "\\'");
-
-    let js = format!(
-        r"(() => {{
-            const el = document.querySelector('{escaped_sel}');
-            if (!el) throw new Error('element not found: {escaped_sel}');
-            el.dispatchEvent(new Event('{escaped_event}', {init_arg}));
-        }})()"
-    );
-
-    if let Err(e) = page.eval(&js).await {
-        return Response::error(format!("dispatch failed: {e}"));
-    }
-
-    Response::ok_data(ResponseData::Text {
-        text: format!("dispatched '{event}' on '{target}'"),
-    })
-}
-
-// ---------------------------------------------------------------------------
-// Misc interaction / query handlers
-// ---------------------------------------------------------------------------
-
-/// Get computed styles of an element via JS `getComputedStyle()`.
-async fn cmd_styles(state: &Arc<Mutex<DaemonState>>, target: &str) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    let escaped = target.replace('\\', "\\\\").replace('\'', "\\'");
-    let js = format!(
-        "(() => {{\
-            const el = document.querySelector('{escaped}');\
-            if (!el) throw new Error('element not found: {escaped}');\
-            const s = getComputedStyle(el);\
-            const r = el.getBoundingClientRect();\
-            return {{\
-                tag: el.tagName.toLowerCase(),\
-                text: (el.innerText || \"\").trim().slice(0, 80) || null,\
-                box: {{ x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) }},\
-                styles: {{\
-                    fontSize: s.fontSize,\
-                    fontWeight: s.fontWeight,\
-                    fontFamily: s.fontFamily.split(\",\")[0].trim().replace(/\"/g, \"\"),\
-                    color: s.color,\
-                    backgroundColor: s.backgroundColor,\
-                    borderRadius: s.borderRadius,\
-                    border: s.border !== \"none\" && s.borderWidth !== \"0px\" ? s.border : null,\
-                    boxShadow: s.boxShadow !== \"none\" ? s.boxShadow : null,\
-                    padding: s.padding,\
-                }},\
-            }};\
-        }})()"
-    );
-
-    match page.eval(&js).await {
-        Ok(val) => Response::ok_data(ResponseData::Eval { value: val }),
-        Err(e) => Response::error(format!("styles failed: {e}")),
-    }
-}
-
-/// Select all text in an element via JS `Selection` API.
-async fn cmd_select_all(state: &Arc<Mutex<DaemonState>>, target: &str) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    let escaped = target.replace('\\', "\\\\").replace('\'', "\\'");
-    let js = format!(
-        r"(() => {{
-            const el = document.querySelector('{escaped}');
-            if (!el) throw new Error('element not found: {escaped}');
-            const range = document.createRange();
-            range.selectNodeContents(el);
-            const sel = window.getSelection();
-            sel.removeAllRanges();
-            sel.addRange(range);
-        }})()"
-    );
-
-    if let Err(e) = page.eval(&js).await {
-        return Response::error(format!("select all failed: {e}"));
-    }
-
-    Response::ok_data(ResponseData::Text {
-        text: "text selected".into(),
-    })
-}
-
-/// Highlight an element with a red border overlay for debugging.
-async fn cmd_highlight(state: &Arc<Mutex<DaemonState>>, target: &str) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    let escaped = target.replace('\\', "\\\\").replace('\'', "\\'");
-    let js = format!(
-        r"(() => {{
-            const el = document.querySelector('{escaped}');
-            if (!el) throw new Error('element not found: {escaped}');
-            el.style.outline = '2px solid red';
-            el.style.outlineOffset = '-1px';
-        }})()"
-    );
-
-    if let Err(e) = page.eval(&js).await {
-        return Response::error(format!("highlight failed: {e}"));
-    }
-
-    Response::ok_data(ResponseData::Text {
-        text: format!("highlighted: {target}"),
-    })
-}
-
-/// Move mouse to absolute coordinates via CDP `Input.dispatchMouseEvent`.
-async fn cmd_mouse_move(state: &Arc<Mutex<DaemonState>>, x: f64, y: f64) -> Response {
-    use chromiumoxide::cdp::browser_protocol::input::{
-        DispatchMouseEventParams, DispatchMouseEventType,
-    };
-
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    let params = DispatchMouseEventParams::builder()
-        .r#type(DispatchMouseEventType::MouseMoved)
-        .x(x)
-        .y(y)
-        .build();
-
-    match params {
-        Ok(p) => {
-            if let Err(e) = page.inner().execute(p).await {
-                return Response::error(format!("mouse move failed: {e}"));
-            }
-        }
-        Err(e) => return Response::error(format!("mouse move params failed: {e}")),
-    }
-
-    Response::ok_data(ResponseData::Text {
-        text: format!("mouse moved to ({x}, {y})"),
-    })
-}
-
-/// Convert our `MouseButton` enum to CDP `MouseButton`.
-const fn to_cdp_mouse_button(
-    button: MouseButton,
-) -> chromiumoxide::cdp::browser_protocol::input::MouseButton {
-    use chromiumoxide::cdp::browser_protocol::input::MouseButton as CdpMB;
-    match button {
-        MouseButton::Right => CdpMB::Right,
-        MouseButton::Middle => CdpMB::Middle,
-        MouseButton::Left => CdpMB::Left,
-    }
-}
-
-/// Press a mouse button down via CDP `Input.dispatchMouseEvent`.
-async fn cmd_mouse_down(state: &Arc<Mutex<DaemonState>>, button: MouseButton) -> Response {
-    use chromiumoxide::cdp::browser_protocol::input::{
-        DispatchMouseEventParams, DispatchMouseEventType,
-    };
-
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    let params = DispatchMouseEventParams::builder()
-        .r#type(DispatchMouseEventType::MousePressed)
-        .button(to_cdp_mouse_button(button))
-        .x(0)
-        .y(0)
-        .click_count(1)
-        .build();
-
-    match params {
-        Ok(p) => {
-            if let Err(e) = page.inner().execute(p).await {
-                return Response::error(format!("mouse down failed: {e}"));
-            }
-        }
-        Err(e) => return Response::error(format!("mouse down params failed: {e}")),
-    }
-
-    Response::ok_data(ResponseData::Text {
-        text: format!("mouse {button:?} button pressed"),
-    })
-}
-
-/// Release a mouse button via CDP `Input.dispatchMouseEvent`.
-async fn cmd_mouse_up(state: &Arc<Mutex<DaemonState>>, button: MouseButton) -> Response {
-    use chromiumoxide::cdp::browser_protocol::input::{
-        DispatchMouseEventParams, DispatchMouseEventType,
-    };
-
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    let params = DispatchMouseEventParams::builder()
-        .r#type(DispatchMouseEventType::MouseReleased)
-        .button(to_cdp_mouse_button(button))
-        .x(0)
-        .y(0)
-        .click_count(1)
-        .build();
-
-    match params {
-        Ok(p) => {
-            if let Err(e) = page.inner().execute(p).await {
-                return Response::error(format!("mouse up failed: {e}"));
-            }
-        }
-        Err(e) => return Response::error(format!("mouse up params failed: {e}")),
-    }
-
-    Response::ok_data(ResponseData::Text {
-        text: format!("mouse {button:?} button released"),
-    })
-}
-
-/// Set download directory via CDP `Browser.setDownloadBehavior`.
+/// Set download directory via CDP and store path in `DaemonState`.
 async fn cmd_set_download_path(state: &Arc<Mutex<DaemonState>>, path: &str) -> Response {
     use chromiumoxide::cdp::browser_protocol::browser::{
         SetDownloadBehaviorBehavior, SetDownloadBehaviorParams,
@@ -1814,7 +1049,7 @@ async fn cmd_downloads(state: &Arc<Mutex<DaemonState>>, action: Option<&str>) ->
             let mut files = Vec::new();
             while let Ok(Some(entry)) = dir.next_entry().await {
                 let name = entry.file_name().to_string_lossy().to_string();
-                let size = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
+                let size = entry.metadata().await.map_or(0, |m| m.len());
                 files.push(serde_json::json!({
                     "name": name,
                     "size": size,
@@ -1848,17 +1083,16 @@ async fn cmd_wait_for_download(
     drop(guard);
 
     // Snapshot existing files before waiting.
-    let before: std::collections::HashSet<String> =
-        match tokio::fs::read_dir(&dl_dir).await {
-            Ok(mut dir) => {
-                let mut set = std::collections::HashSet::new();
-                while let Ok(Some(entry)) = dir.next_entry().await {
-                    set.insert(entry.file_name().to_string_lossy().to_string());
-                }
-                set
+    let before: std::collections::HashSet<String> = match tokio::fs::read_dir(&dl_dir).await {
+        Ok(mut dir) => {
+            let mut set = std::collections::HashSet::new();
+            while let Ok(Some(entry)) = dir.next_entry().await {
+                set.insert(entry.file_name().to_string_lossy().to_string());
             }
-            Err(e) => return Response::error(format!("read download dir: {e}")),
-        };
+            set
+        }
+        Err(e) => return Response::error(format!("read download dir: {e}")),
+    };
 
     // Poll for new files until timeout.
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
@@ -1871,7 +1105,10 @@ async fn cmd_wait_for_download(
             while let Ok(Some(entry)) = dir.next_entry().await {
                 let name = entry.file_name().to_string_lossy().to_string();
                 // Skip partial Chrome downloads.
-                if std::path::Path::new(&name).extension().is_some_and(|e| e == "crdownload" || e == "tmp") {
+                if std::path::Path::new(&name)
+                    .extension()
+                    .is_some_and(|e| e == "crdownload" || e == "tmp")
+                {
                     continue;
                 }
                 if !before.contains(&name) {
@@ -1965,7 +1202,7 @@ async fn get_page(state: &Arc<Mutex<DaemonState>>) -> Result<Page, Response> {
 }
 
 // ---------------------------------------------------------------------------
-// Command handlers (only for non-trivial responses)
+// Handlers requiring structured responses or complex logic
 // ---------------------------------------------------------------------------
 
 async fn cmd_navigate(state: &Arc<Mutex<DaemonState>>, url: &str, wait: WaitStrategy) -> Response {
@@ -2001,104 +1238,6 @@ async fn cmd_snapshot(
             })
         }
         Err(e) => Response::error(format!("snapshot failed: {e}")),
-    }
-}
-
-async fn cmd_screenshot(
-    state: &Arc<Mutex<DaemonState>>,
-    selector: Option<&str>,
-    format: &str,
-    quality: u8,
-) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-
-    // If a selector is given, scroll it into view first and capture its clip region
-    if let Some(sel) = selector {
-        // Scroll element into view and get its bounding box via JS
-        let escaped = sel.replace('\\', "\\\\").replace('\'', "\\'");
-        let js = format!(
-            "(() => {{ const el = document.querySelector('{escaped}'); \
-             if (!el) throw new Error('element not found: {escaped}'); \
-             el.scrollIntoView({{ block: 'center' }}); \
-             const r = el.getBoundingClientRect(); \
-             return {{ x: r.x, y: r.y, width: r.width, height: r.height }}; }})()"
-        );
-        let _bbox: serde_json::Value = match page.eval(&js).await {
-            Ok(v) => v,
-            Err(e) => return Response::error(format!("screenshot selector failed: {e}")),
-        };
-    }
-
-    let result = if format == "jpeg" {
-        page.screenshot_jpeg(quality).await
-    } else {
-        page.screenshot_png().await
-    };
-
-    match result {
-        Ok(bytes) => {
-            let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
-            Response::ok_data(ResponseData::Screenshot { data })
-        }
-        Err(e) => Response::error(format!("screenshot failed: {e}")),
-    }
-}
-
-async fn cmd_eval(state: &Arc<Mutex<DaemonState>>, expression: &str) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-    match page.eval(expression).await {
-        Ok(val) => Response::ok_data(ResponseData::Eval { value: val }),
-        Err(e) => Response::error(format!("eval failed: {e}")),
-    }
-}
-
-async fn cmd_type(
-    state: &Arc<Mutex<DaemonState>>,
-    target: Option<&str>,
-    text: &str,
-    delay_ms: u64,
-) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-    if let Some(t) = target {
-        if let Err(e) = page.type_into(t, text).await {
-            return Response::error(format!("type failed: {e}"));
-        }
-        return Response::ok();
-    }
-    if delay_ms > 0 {
-        // Type each character with a delay
-        for ch in text.chars() {
-            let s = ch.to_string();
-            if let Err(e) = page.type_text(&s).await {
-                return Response::error(format!("type failed: {e}"));
-            }
-            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-        }
-        return Response::ok();
-    }
-    match page.type_text(text).await {
-        Ok(()) => Response::ok(),
-        Err(e) => Response::error(format!("type failed: {e}")),
-    }
-}
-
-async fn cmd_text(state: &Arc<Mutex<DaemonState>>, target: Option<&str>) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-    match page.get_text(target).await {
-        Ok(text) => Response::ok_data(ResponseData::Text { text }),
-        Err(e) => Response::error(format!("text failed: {e}")),
     }
 }
 
@@ -2151,67 +1290,6 @@ async fn cmd_wait(state: &Arc<Mutex<DaemonState>>, condition: WaitCondition) -> 
     match result {
         Ok(()) => Response::ok(),
         Err(e) => Response::error(e.to_string()),
-    }
-}
-
-async fn cmd_dialog_message(state: &Arc<Mutex<DaemonState>>) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-    page.dialog_message().await.map_or_else(
-        || {
-            Response::ok_data(ResponseData::Text {
-                text: "(no dialog)".into(),
-            })
-        },
-        |info| {
-            let value = serde_json::to_value(&info).unwrap_or_default();
-            Response::ok_data(ResponseData::Eval { value })
-        },
-    )
-}
-
-async fn cmd_get_cookies(state: &Arc<Mutex<DaemonState>>) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-    match page.get_cookies().await {
-        Ok(cookies) => Response::ok_data(ResponseData::Eval { value: cookies }),
-        Err(e) => Response::error(format!("get cookies failed: {e}")),
-    }
-}
-
-async fn cmd_bool_check(state: &Arc<Mutex<DaemonState>>, target: &str, method: &str) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-    let result = match method {
-        "is_visible" => page.is_visible(target).await,
-        "is_enabled" => page.is_enabled(target).await,
-        "is_checked" => page.is_checked(target).await,
-        _ => return Response::error(format!("unknown check: {method}")),
-    };
-    match result {
-        Ok(val) => Response::ok_data(ResponseData::Text {
-            text: val.to_string(),
-        }),
-        Err(e) => Response::error(e.ai_friendly(target).to_string()),
-    }
-}
-
-async fn cmd_count(state: &Arc<Mutex<DaemonState>>, selector: &str) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-    match page.count(selector).await {
-        Ok(n) => Response::ok_data(ResponseData::Text {
-            text: n.to_string(),
-        }),
-        Err(e) => Response::error(e.ai_friendly(selector).to_string()),
     }
 }
 
@@ -2288,50 +1366,6 @@ async fn cmd_tab_close(state: &Arc<Mutex<DaemonState>>, index: Option<usize>) ->
     }
     Response::ok_data(ResponseData::Text {
         text: format!("tab {idx} closed, active tab: {}", guard.active_tab),
-    })
-}
-
-async fn cmd_console(state: &Arc<Mutex<DaemonState>>, clear: bool) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-    let logs = page.take_console_logs().await;
-    if clear {
-        return Response::ok_data(ResponseData::Text {
-            text: format!("{} console entries cleared", logs.len()),
-        });
-    }
-    let entries = serde_json::to_value(&logs).unwrap_or_default();
-    Response::ok_data(ResponseData::Logs { entries })
-}
-
-async fn cmd_errors(state: &Arc<Mutex<DaemonState>>, clear: bool) -> Response {
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-    let errors = page.take_js_errors().await;
-    if clear {
-        return Response::ok_data(ResponseData::Text {
-            text: format!("{} error entries cleared", errors.len()),
-        });
-    }
-    let entries = serde_json::to_value(&errors).unwrap_or_default();
-    Response::ok_data(ResponseData::Logs { entries })
-}
-
-async fn cmd_status(state: &Arc<Mutex<DaemonState>>) -> Response {
-    let guard = state.lock().await;
-    let browser_running = guard.browser.is_some();
-    let page_url: Option<String> = if let Some(page) = guard.pages.get(guard.active_tab) {
-        page.url().await.ok()
-    } else {
-        None
-    };
-    Response::ok_data(ResponseData::Status {
-        browser_running,
-        page_url,
     })
 }
 

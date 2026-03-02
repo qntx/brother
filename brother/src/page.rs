@@ -7,11 +7,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::Engine;
 use chromiumoxide::cdp::browser_protocol::accessibility::GetFullAxTreeParams;
 use chromiumoxide::cdp::browser_protocol::dom::{BackendNodeId, FocusParams, ResolveNodeParams};
 use chromiumoxide::cdp::browser_protocol::input::{
     DispatchKeyEventParams, DispatchKeyEventType, DispatchMouseEventParams, DispatchMouseEventType,
-    MouseButton,
+    MouseButton as CdpMouseButton,
 };
 use chromiumoxide::cdp::browser_protocol::page::{
     CaptureScreenshotFormat, GetNavigationHistoryParams, NavigateToHistoryEntryParams,
@@ -26,7 +27,7 @@ use serde::Serialize;
 use tokio::sync::Mutex;
 
 use crate::error::{Error, Result};
-use crate::protocol::ScrollDirection;
+use crate::protocol::{MouseButton, ScrollDirection};
 use crate::snapshot::{self, CursorItem, Ref, RefMap, Snapshot, SnapshotOptions};
 
 /// A captured console message from the browser.
@@ -1180,15 +1181,717 @@ impl Page {
         use chromiumoxide::cdp::browser_protocol::page::PrintToPdfParams;
         let params = PrintToPdfParams::default();
         let resp = self.inner.execute(params).await.map_err(Error::Cdp)?;
-        let bytes = base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            &resp.result.data,
-        )
-        .map_err(|e| Error::Browser(format!("base64 decode: {e}")))?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&resp.result.data)
+            .map_err(|e| Error::Browser(format!("base64 decode: {e}")))?;
         tokio::fs::write(path, bytes)
             .await
             .map_err(|e| Error::Browser(format!("write PDF: {e}")))?;
         Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Environment emulation
+    // -----------------------------------------------------------------------
+
+    /// Set the viewport size via CDP `Emulation.setDeviceMetricsOverride`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the CDP command fails.
+    pub async fn set_viewport(&self, width: u32, height: u32) -> Result<()> {
+        use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
+        let params =
+            SetDeviceMetricsOverrideParams::new(i64::from(width), i64::from(height), 1.0, false);
+        self.inner.execute(params).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Emulate media features (color scheme, print/screen, reduced motion, etc.).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the CDP command fails.
+    pub async fn emulate_media(
+        &self,
+        media: Option<&str>,
+        color_scheme: Option<&str>,
+        reduced_motion: Option<&str>,
+        forced_colors: Option<&str>,
+    ) -> Result<()> {
+        use chromiumoxide::cdp::browser_protocol::emulation::{
+            MediaFeature, SetEmulatedMediaParams,
+        };
+        let mut params = SetEmulatedMediaParams::default();
+        if let Some(m) = media {
+            params.media = Some(m.to_owned());
+        }
+        let mut features = Vec::new();
+        if let Some(cs) = color_scheme {
+            features.push(MediaFeature::new("prefers-color-scheme", cs));
+        }
+        if let Some(rm) = reduced_motion {
+            features.push(MediaFeature::new("prefers-reduced-motion", rm));
+        }
+        if let Some(fc) = forced_colors {
+            features.push(MediaFeature::new("forced-colors", fc));
+        }
+        if !features.is_empty() {
+            params.features = Some(features);
+        }
+        self.inner.execute(params).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Toggle offline mode via JS fetch/XHR monkey-patch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if JS evaluation fails.
+    pub async fn set_offline(&self, offline: bool) -> Result<()> {
+        let js = if offline {
+            r"(() => {
+                if (!window.__brother_offline) {
+                    window.__brother_offline = true;
+                    const F = window.fetch;
+                    window.__brother_orig_fetch = F;
+                    window.fetch = function() {
+                        if (window.__brother_offline) return Promise.reject(new TypeError('Network request failed (offline mode)'));
+                        return F.apply(this, arguments);
+                    };
+                } else {
+                    window.__brother_offline = true;
+                }
+            })()"
+        } else {
+            r"(() => { window.__brother_offline = false; })()"
+        };
+        self.eval(js).await?;
+        Ok(())
+    }
+
+    /// Set extra HTTP headers via CDP `Network.setExtraHTTPHeaders`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the CDP command fails.
+    pub async fn set_extra_headers(
+        &self,
+        headers: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<()> {
+        use chromiumoxide::cdp::browser_protocol::network::{Headers, SetExtraHttpHeadersParams};
+        let params = SetExtraHttpHeadersParams::new(Headers::new(headers));
+        self.inner.execute(params).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Override geolocation via CDP `Emulation.setGeolocationOverride`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the CDP command fails.
+    pub async fn set_geolocation(
+        &self,
+        latitude: f64,
+        longitude: f64,
+        accuracy: f64,
+    ) -> Result<()> {
+        use chromiumoxide::cdp::browser_protocol::emulation::SetGeolocationOverrideParams;
+        let params = SetGeolocationOverrideParams {
+            latitude: Some(latitude),
+            longitude: Some(longitude),
+            accuracy: Some(accuracy),
+            ..Default::default()
+        };
+        self.inner.execute(params).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Set HTTP Basic Auth credentials via CDP extra headers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the CDP command fails.
+    pub async fn set_credentials(&self, username: &str, password: &str) -> Result<()> {
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"));
+        let mut map = serde_json::Map::new();
+        map.insert(
+            "Authorization".to_owned(),
+            serde_json::Value::String(format!("Basic {encoded}")),
+        );
+        self.set_extra_headers(map).await
+    }
+
+    /// Override the browser user-agent string via CDP `Network.setUserAgentOverride`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the CDP command fails.
+    pub async fn set_user_agent(&self, user_agent: &str) -> Result<()> {
+        use chromiumoxide::cdp::browser_protocol::network::SetUserAgentOverrideParams;
+        let params = SetUserAgentOverrideParams::new(user_agent.to_owned());
+        self.inner.execute(params).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Override the timezone via CDP `Emulation.setTimezoneOverride`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the CDP command fails.
+    pub async fn set_timezone(&self, timezone_id: &str) -> Result<()> {
+        use chromiumoxide::cdp::browser_protocol::emulation::SetTimezoneOverrideParams;
+        let params = SetTimezoneOverrideParams::new(timezone_id.to_owned());
+        self.inner.execute(params).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Override the locale via JS `navigator.language/languages` override.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if JS evaluation fails.
+    pub async fn set_locale(&self, locale: &str) -> Result<()> {
+        let escaped = locale.replace('\'', "\\'");
+        let js = format!(
+            "Object.defineProperty(navigator, 'language', {{ get: () => '{escaped}' }}); \
+             Object.defineProperty(navigator, 'languages', {{ get: () => ['{escaped}'] }});"
+        );
+        self.eval(&js).await?;
+        Ok(())
+    }
+
+    /// Grant or revoke browser permissions via CDP `Browser.setPermission`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any permission grant/deny fails.
+    pub async fn set_permissions(&self, permissions: &[String], grant: bool) -> Result<()> {
+        use chromiumoxide::cdp::browser_protocol::browser::{
+            PermissionDescriptor, PermissionSetting, SetPermissionParams,
+        };
+        let setting = if grant {
+            PermissionSetting::Granted
+        } else {
+            PermissionSetting::Denied
+        };
+        for perm in permissions {
+            let descriptor = PermissionDescriptor::new(perm.clone());
+            let params = SetPermissionParams::new(descriptor, setting.clone());
+            self.inner.execute(params).await.map_err(Error::Cdp)?;
+        }
+        Ok(())
+    }
+
+    /// Bring the page to front via CDP `Page.bringToFront`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the CDP command fails.
+    pub async fn bring_to_front(&self) -> Result<()> {
+        use chromiumoxide::cdp::browser_protocol::page::BringToFrontParams;
+        self.inner
+            .execute(BringToFrontParams::default())
+            .await
+            .map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Set download behavior via CDP `Browser.setDownloadBehavior`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the CDP command fails.
+    pub async fn set_download_behavior(&self, path: &str) -> Result<()> {
+        use chromiumoxide::cdp::browser_protocol::browser::{
+            SetDownloadBehaviorBehavior, SetDownloadBehaviorParams,
+        };
+        let mut params = SetDownloadBehaviorParams::new(SetDownloadBehaviorBehavior::AllowAndName);
+        params.download_path = Some(path.to_owned());
+        self.inner.execute(params).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Enhanced interaction
+    // -----------------------------------------------------------------------
+
+    /// Click with specific button and click count.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the element is not found.
+    pub async fn click_with(
+        &self,
+        target: &str,
+        button: MouseButton,
+        click_count: u32,
+    ) -> Result<()> {
+        if button == MouseButton::Left && click_count == 1 {
+            return self.click(target).await;
+        }
+        let center = self.resolve_target_center(target).await?;
+        let cdp_btn = Self::to_cdp_button(button);
+        let count = i64::from(click_count);
+        self.dispatch_mouse_with(
+            DispatchMouseEventType::MousePressed,
+            center,
+            count,
+            cdp_btn.clone(),
+        )
+        .await?;
+        self.dispatch_mouse_with(
+            DispatchMouseEventType::MouseReleased,
+            center,
+            count,
+            cdp_btn,
+        )
+        .await
+    }
+
+    /// Select multiple options on a `<select>` element.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the element is not found.
+    pub async fn select_options(&self, target: &str, values: &[String]) -> Result<()> {
+        for v in values {
+            self.select_option(target, v).await?;
+        }
+        Ok(())
+    }
+
+    /// Type text with a per-character delay (0 = default behavior).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the CDP command fails.
+    pub async fn type_with_delay(
+        &self,
+        target: Option<&str>,
+        text: &str,
+        delay_ms: u64,
+    ) -> Result<()> {
+        if let Some(t) = target {
+            self.focus(t).await?;
+        }
+        if delay_ms == 0 {
+            return self.type_text(text).await;
+        }
+        for ch in text.chars() {
+            let s = ch.to_string();
+            self.inner
+                .execute(
+                    DispatchKeyEventParams::builder()
+                        .r#type(DispatchKeyEventType::Char)
+                        .text(s)
+                        .build()
+                        .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?,
+                )
+                .await
+                .map_err(Error::Cdp)?;
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
+        Ok(())
+    }
+
+    /// Set an input value directly via JS (no events fired).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if JS evaluation fails.
+    pub async fn set_value(&self, target: &str, value: &str) -> Result<()> {
+        let escaped_sel = target.replace('\'', "\\'");
+        let escaped_val = value.replace('\\', "\\\\").replace('\'', "\\'");
+        let js = format!(
+            "(() => {{ const el = document.querySelector('{escaped_sel}'); \
+             if (!el) throw new Error('Element not found: {escaped_sel}'); \
+             el.value = '{escaped_val}'; }})()"
+        );
+        self.eval(&js).await?;
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Mouse / Touch
+    // -----------------------------------------------------------------------
+
+    /// Move the mouse to absolute coordinates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the CDP command fails.
+    pub async fn mouse_move(&self, x: f64, y: f64) -> Result<()> {
+        let params = DispatchMouseEventParams::builder()
+            .r#type(DispatchMouseEventType::MouseMoved)
+            .x(x)
+            .y(y)
+            .build()
+            .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?;
+        self.inner.execute(params).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Press a mouse button down at the current position.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the CDP command fails.
+    pub async fn mouse_down(&self, button: MouseButton) -> Result<()> {
+        let params = DispatchMouseEventParams::builder()
+            .r#type(DispatchMouseEventType::MousePressed)
+            .button(Self::to_cdp_button(button))
+            .x(0)
+            .y(0)
+            .click_count(1)
+            .build()
+            .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?;
+        self.inner.execute(params).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Release a mouse button at the current position.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the CDP command fails.
+    pub async fn mouse_up(&self, button: MouseButton) -> Result<()> {
+        let params = DispatchMouseEventParams::builder()
+            .r#type(DispatchMouseEventType::MouseReleased)
+            .button(Self::to_cdp_button(button))
+            .x(0)
+            .y(0)
+            .click_count(1)
+            .build()
+            .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?;
+        self.inner.execute(params).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Scroll with the mouse wheel, optionally targeting an element.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the CDP command fails.
+    pub async fn wheel(&self, delta_x: f64, delta_y: f64, selector: Option<&str>) -> Result<()> {
+        if let Some(sel) = selector {
+            self.hover(sel).await?;
+        }
+        let params = DispatchMouseEventParams::builder()
+            .r#type(DispatchMouseEventType::MouseWheel)
+            .x(0)
+            .y(0)
+            .delta_x(delta_x)
+            .delta_y(delta_y)
+            .build()
+            .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?;
+        self.inner.execute(params).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Touch-tap an element by resolving its center and dispatching touch events.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the element is not found.
+    pub async fn tap(&self, target: &str) -> Result<()> {
+        use chromiumoxide::cdp::browser_protocol::input::{
+            DispatchTouchEventParams, DispatchTouchEventType, TouchPoint,
+        };
+        let center = self.resolve_target_center(target).await?;
+        let point = TouchPoint::new(center.x, center.y);
+        let start =
+            DispatchTouchEventParams::new(DispatchTouchEventType::TouchStart, vec![point.clone()]);
+        self.inner.execute(start).await.map_err(Error::Cdp)?;
+        let end = DispatchTouchEventParams::new(DispatchTouchEventType::TouchEnd, vec![]);
+        self.inner.execute(end).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Script injection
+    // -----------------------------------------------------------------------
+
+    /// Add a script to evaluate on every new document (before page JS).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the CDP command fails.
+    pub async fn add_init_script(&self, script: &str) -> Result<()> {
+        use chromiumoxide::cdp::browser_protocol::page::AddScriptToEvaluateOnNewDocumentParams;
+        let params = AddScriptToEvaluateOnNewDocumentParams::new(script.to_owned());
+        self.inner.execute(params).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Inject a `<script>` tag into the current page.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if JS evaluation fails or neither content nor url is given.
+    pub async fn add_script(&self, content: Option<&str>, url: Option<&str>) -> Result<()> {
+        let js = match (content, url) {
+            (Some(c), _) => {
+                let escaped = c
+                    .replace('\\', "\\\\")
+                    .replace('`', "\\`")
+                    .replace('$', "\\$");
+                format!(
+                    r"(() => {{ const s = document.createElement('script'); s.textContent = `{escaped}`; document.head.appendChild(s); }})()"
+                )
+            }
+            (_, Some(u)) => {
+                let escaped = u.replace('\\', "\\\\").replace('\'', "\\'");
+                format!(
+                    r"(() => {{ const s = document.createElement('script'); s.src = '{escaped}'; document.head.appendChild(s); }})()"
+                )
+            }
+            _ => return Err(Error::Browser("either content or url is required".into())),
+        };
+        self.eval(&js).await?;
+        Ok(())
+    }
+
+    /// Inject a `<style>` or `<link>` tag into the current page.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if JS evaluation fails or neither content nor url is given.
+    pub async fn add_style(&self, content: Option<&str>, url: Option<&str>) -> Result<()> {
+        let js = match (content, url) {
+            (Some(c), _) => {
+                let escaped = c
+                    .replace('\\', "\\\\")
+                    .replace('`', "\\`")
+                    .replace('$', "\\$");
+                format!(
+                    r"(() => {{ const s = document.createElement('style'); s.textContent = `{escaped}`; document.head.appendChild(s); }})()"
+                )
+            }
+            (_, Some(u)) => {
+                let escaped = u.replace('\\', "\\\\").replace('\'', "\\'");
+                format!(
+                    r"(() => {{ const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = '{escaped}'; document.head.appendChild(l); }})()"
+                )
+            }
+            _ => return Err(Error::Browser("either content or url is required".into())),
+        };
+        self.eval(&js).await?;
+        Ok(())
+    }
+
+    /// Dispatch a DOM event on an element.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if JS evaluation fails.
+    pub async fn dispatch_event(
+        &self,
+        target: &str,
+        event: &str,
+        event_init: Option<&str>,
+    ) -> Result<()> {
+        let escaped_event = event.replace('\\', "\\\\").replace('\'', "\\'");
+        let init_arg = event_init.map_or_else(|| "{}".to_owned(), ToOwned::to_owned);
+        let escaped_sel = target.replace('\\', "\\\\").replace('\'', "\\'");
+        let js = format!(
+            r"(() => {{
+                const el = document.querySelector('{escaped_sel}');
+                if (!el) throw new Error('element not found: {escaped_sel}');
+                el.dispatchEvent(new Event('{escaped_event}', {init_arg}));
+            }})()"
+        );
+        self.eval(&js).await?;
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Misc queries
+    // -----------------------------------------------------------------------
+
+    /// Get computed styles of an element as a JSON value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if JS evaluation fails.
+    pub async fn get_styles(&self, target: &str) -> Result<serde_json::Value> {
+        let escaped = target.replace('\\', "\\\\").replace('\'', "\\'");
+        let js = format!(
+            "(() => {{\
+                const el = document.querySelector('{escaped}');\
+                if (!el) throw new Error('element not found: {escaped}');\
+                const s = getComputedStyle(el);\
+                const r = el.getBoundingClientRect();\
+                return {{\
+                    tag: el.tagName.toLowerCase(),\
+                    text: (el.innerText || \"\").trim().slice(0, 80) || null,\
+                    box: {{ x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height) }},\
+                    styles: {{\
+                        fontSize: s.fontSize,\
+                        fontWeight: s.fontWeight,\
+                        fontFamily: s.fontFamily.split(\",\")[0].trim().replace(/\"/g, \"\"),\
+                        color: s.color,\
+                        backgroundColor: s.backgroundColor,\
+                        borderRadius: s.borderRadius,\
+                        border: s.border !== \"none\" && s.borderWidth !== \"0px\" ? s.border : null,\
+                        boxShadow: s.boxShadow !== \"none\" ? s.boxShadow : null,\
+                        padding: s.padding,\
+                    }},\
+                }};\
+            }})()"
+        );
+        self.eval(&js).await
+    }
+
+    /// Select all text in an element via JS `Selection` API.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if JS evaluation fails.
+    pub async fn select_all_text(&self, target: &str) -> Result<()> {
+        let escaped = target.replace('\\', "\\\\").replace('\'', "\\'");
+        let js = format!(
+            r"(() => {{
+                const el = document.querySelector('{escaped}');
+                if (!el) throw new Error('element not found: {escaped}');
+                const range = document.createRange();
+                range.selectNodeContents(el);
+                const sel = window.getSelection();
+                sel.removeAllRanges();
+                sel.addRange(range);
+            }})()"
+        );
+        self.eval(&js).await?;
+        Ok(())
+    }
+
+    /// Highlight an element with a visible red border overlay.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if JS evaluation fails.
+    pub async fn highlight(&self, target: &str) -> Result<()> {
+        let escaped = target.replace('\\', "\\\\").replace('\'', "\\'");
+        let js = format!(
+            r"(() => {{
+                const el = document.querySelector('{escaped}');
+                if (!el) throw new Error('element not found: {escaped}');
+                el.style.outline = '2px solid red';
+                el.style.outlineOffset = '-1px';
+            }})()"
+        );
+        self.eval(&js).await?;
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Clipboard
+    // -----------------------------------------------------------------------
+
+    /// Read text from the clipboard (grants permission first).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if permission or JS evaluation fails.
+    pub async fn clipboard_read(&self) -> Result<String> {
+        self.grant_clipboard_permission().await?;
+        let val = self.eval("navigator.clipboard.readText()").await?;
+        Ok(val.as_str().unwrap_or("").to_owned())
+    }
+
+    /// Write text to the clipboard (grants permission first).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if permission or JS evaluation fails.
+    pub async fn clipboard_write(&self, text: &str) -> Result<()> {
+        self.grant_clipboard_permission().await?;
+        let escaped = text.replace('\\', "\\\\").replace('\'', "\\'");
+        self.eval(&format!("navigator.clipboard.writeText('{escaped}')"))
+            .await?;
+        Ok(())
+    }
+
+    /// Grant clipboard-read and clipboard-write permissions.
+    async fn grant_clipboard_permission(&self) -> Result<()> {
+        use chromiumoxide::cdp::browser_protocol::browser::{
+            PermissionDescriptor, PermissionSetting, SetPermissionParams,
+        };
+        for perm_name in ["clipboard-read", "clipboard-write"] {
+            let descriptor = PermissionDescriptor::new(perm_name.to_owned());
+            let params = SetPermissionParams::new(descriptor, PermissionSetting::Granted);
+            self.inner.execute(params).await.map_err(Error::Cdp)?;
+        }
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Enhanced screenshot
+    // -----------------------------------------------------------------------
+
+    /// Capture a screenshot with full options (format, quality, selector, full page).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the CDP command fails.
+    pub async fn screenshot(
+        &self,
+        full_page: bool,
+        selector: Option<&str>,
+        format: &str,
+        quality: Option<u8>,
+    ) -> Result<Vec<u8>> {
+        use chromiumoxide::cdp::browser_protocol::page::{
+            CaptureScreenshotParams, Viewport as CdpViewport,
+        };
+
+        // If a selector is given, capture just that element's bounding box.
+        if let Some(sel) = selector {
+            let (x, y, w, h) = self.bounding_box(sel).await?;
+            let clip = CdpViewport {
+                x,
+                y,
+                width: w,
+                height: h,
+                scale: 1.0,
+            };
+            let fmt = if format == "jpeg" {
+                CaptureScreenshotFormat::Jpeg
+            } else {
+                CaptureScreenshotFormat::Png
+            };
+            let mut params = CaptureScreenshotParams::builder().format(fmt).clip(clip);
+            if let Some(q) = quality {
+                params = params.quality(i64::from(q));
+            }
+            let data = self
+                .inner
+                .execute(params.build())
+                .await
+                .map_err(Error::Cdp)?;
+            return base64::engine::general_purpose::STANDARD
+                .decode(&data.result.data)
+                .map_err(|e| Error::Browser(format!("base64 decode: {e}")));
+        }
+
+        // Full page or viewport screenshot.
+        let fmt = if format == "jpeg" {
+            CaptureScreenshotFormat::Jpeg
+        } else {
+            CaptureScreenshotFormat::Png
+        };
+        let mut builder = ScreenshotParams::builder().format(fmt);
+        if full_page {
+            builder = builder.full_page(true);
+        }
+        if let Some(q) = quality {
+            builder = builder.quality(i64::from(q));
+        }
+        self.inner
+            .screenshot(builder.build())
+            .await
+            .map_err(Error::Cdp)
     }
 
     // -----------------------------------------------------------------------
@@ -1497,12 +2200,24 @@ impl Page {
         Ok(())
     }
 
-    /// Dispatch a mouse event at a point.
+    /// Dispatch a mouse event at a point (left button).
     async fn dispatch_mouse(
         &self,
         kind: DispatchMouseEventType,
         point: Point,
         click_count: i64,
+    ) -> Result<()> {
+        self.dispatch_mouse_with(kind, point, click_count, CdpMouseButton::Left)
+            .await
+    }
+
+    /// Dispatch a mouse event at a point with a specific button.
+    async fn dispatch_mouse_with(
+        &self,
+        kind: DispatchMouseEventType,
+        point: Point,
+        click_count: i64,
+        button: CdpMouseButton,
     ) -> Result<()> {
         self.inner
             .execute(
@@ -1510,7 +2225,7 @@ impl Page {
                     .r#type(kind)
                     .x(point.x)
                     .y(point.y)
-                    .button(MouseButton::Left)
+                    .button(button)
                     .click_count(click_count)
                     .build()
                     .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?,
@@ -1518,6 +2233,15 @@ impl Page {
             .await
             .map_err(Error::Cdp)?;
         Ok(())
+    }
+
+    /// Convert protocol `MouseButton` to CDP `MouseButton`.
+    const fn to_cdp_button(button: MouseButton) -> CdpMouseButton {
+        match button {
+            MouseButton::Left => CdpMouseButton::Left,
+            MouseButton::Right => CdpMouseButton::Right,
+            MouseButton::Middle => CdpMouseButton::Middle,
+        }
     }
 
     /// Poll a JS expression until truthy or timeout.

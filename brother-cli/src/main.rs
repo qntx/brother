@@ -836,9 +836,7 @@ fn build_request(cmd: &Command) -> Request {
         },
         Command::ClipboardRead => Request::ClipboardRead,
         Command::ClipboardWrite { text } => Request::ClipboardWrite { text: text.clone() },
-        Command::SetDownloadPath { path } => Request::SetDownloadPath {
-            path: path.clone(),
-        },
+        Command::SetDownloadPath { path } => Request::SetDownloadPath { path: path.clone() },
         Command::Downloads { action } => Request::Downloads {
             action: action.clone(),
         },

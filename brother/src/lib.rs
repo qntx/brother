@@ -39,5 +39,5 @@ pub use browser::Browser;
 pub use config::BrowserConfig;
 pub use error::{Error, Result};
 pub use page::{ConsoleEntry, DialogInfo, JsError, Page};
-pub use protocol::ScrollDirection;
+pub use protocol::{MouseButton, RouteAction, ScrollDirection};
 pub use snapshot::{Ref, RefMap, Snapshot, SnapshotOptions};
