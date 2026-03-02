@@ -1,5 +1,5 @@
 [workspace]
-members = ["brother", "brother-cli"]
+members = ["brother", "brother-cli", "brother-pw"]
 default-members = ["brother"]
 resolver = "3"
 

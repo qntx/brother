@@ -52,6 +52,65 @@ impl Snapshot {
     }
 }
 
+impl Snapshot {
+    /// Append cursor-interactive elements detected via JS to the snapshot.
+    ///
+    /// These are elements with `cursor:pointer`, `onclick`, or `tabindex` that
+    /// lack proper ARIA roles and were not captured by the accessibility tree.
+    pub fn append_cursor_elements(&mut self, items: &[CursorItem]) {
+        if items.is_empty() {
+            return;
+        }
+
+        // Dedup: skip items whose text already appears in existing ref names
+        let existing: std::collections::HashSet<String> = self
+            .refs
+            .values()
+            .map(|r| r.name.to_ascii_lowercase())
+            .collect();
+
+        let next_id = self
+            .refs
+            .keys()
+            .filter_map(|k| k.strip_prefix('e')?.parse::<u32>().ok())
+            .max()
+            .unwrap_or(0);
+
+        let mut extra_lines = Vec::new();
+        let mut counter = next_id;
+
+        for item in items {
+            if existing.contains(&item.text.to_ascii_lowercase()) {
+                continue;
+            }
+            counter += 1;
+            let id = format!("e{counter}");
+            let role = "clickable";
+
+            self.refs.insert(
+                id.clone(),
+                Ref {
+                    role: role.to_owned(),
+                    name: item.text.clone(),
+                    backend_node_id: 0,
+                    nth: None,
+                    focusable: true,
+                },
+            );
+
+            extra_lines.push(format!(
+                "- {role} \"{}\" [ref={id}] [{}]",
+                item.text, item.hints
+            ));
+        }
+
+        if !extra_lines.is_empty() {
+            self.tree.push_str("\n# Cursor-interactive elements:\n");
+            self.tree.push_str(&extra_lines.join("\n"));
+        }
+    }
+}
+
 impl fmt::Display for Snapshot {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.tree)
@@ -82,6 +141,15 @@ pub struct Ref {
     pub focusable: bool,
 }
 
+/// A cursor-interactive element detected via JS (not in the AX tree).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CursorItem {
+    /// Visible text content (trimmed, max 100 chars).
+    pub text: String,
+    /// Why it's interactive (e.g. "cursor:pointer, onclick").
+    pub hints: String,
+}
+
 /// Options for filtering and formatting a snapshot.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SnapshotOptions {
@@ -93,6 +161,9 @@ pub struct SnapshotOptions {
     pub max_depth: usize,
     /// CSS selector to scope the snapshot subtree.
     pub selector: Option<String>,
+    /// Also detect cursor-interactive elements (`cursor:pointer`, `onclick`,
+    /// `tabindex`) that lack proper ARIA roles and append them to the tree.
+    pub cursor_interactive: bool,
 }
 
 impl SnapshotOptions {
@@ -114,6 +185,20 @@ impl SnapshotOptions {
     #[must_use]
     pub const fn max_depth(mut self, depth: usize) -> Self {
         self.max_depth = depth;
+        self
+    }
+
+    /// Scope snapshot to a CSS selector subtree.
+    #[must_use]
+    pub fn selector(mut self, sel: impl Into<String>) -> Self {
+        self.selector = Some(sel.into());
+        self
+    }
+
+    /// Include cursor-interactive elements (cursor:pointer, onclick, tabindex).
+    #[must_use]
+    pub const fn cursor_interactive(mut self, v: bool) -> Self {
+        self.cursor_interactive = v;
         self
     }
 }

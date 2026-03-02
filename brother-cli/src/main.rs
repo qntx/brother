@@ -41,6 +41,15 @@ enum Command {
         /// Remove empty structural nodes.
         #[arg(short, long)]
         compact: bool,
+        /// Maximum tree depth (0 = unlimited).
+        #[arg(short, long, default_value_t = 0)]
+        depth: usize,
+        /// CSS selector to scope the snapshot subtree.
+        #[arg(short, long)]
+        selector: Option<String>,
+        /// Also detect cursor-interactive elements (cursor:pointer, onclick).
+        #[arg(short = 'C', long)]
+        cursor: bool,
     },
     /// Click an element by ref (`@e1`) or CSS selector.
     Click {
@@ -158,6 +167,61 @@ enum Command {
         #[arg(short, long, default_value = "30000")]
         timeout: u64,
     },
+    /// Check element state: visible, enabled, checked, or count elements.
+    #[command(name = "check")]
+    StateCheck {
+        /// What to check: `visible`, `enabled`, `checked`, `count`.
+        what: String,
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Dialog handling: message, accept, dismiss.
+    Dialog {
+        /// Action: `message`, `accept`, `dismiss`.
+        action: String,
+        /// Prompt text (for `accept` on prompt dialogs).
+        text: Option<String>,
+    },
+    /// Cookie management: get, set, clear.
+    Cookie {
+        /// Action: `get`, `set`, `clear`.
+        action: String,
+        /// Cookie string for `set` (e.g. `"name=value; path=/"`).
+        value: Option<String>,
+    },
+    /// Storage management: get, set, clear.
+    Storage {
+        /// Action: `get`, `set`, `clear`.
+        action: String,
+        /// Key for get/set.
+        key: Option<String>,
+        /// Value for set.
+        value: Option<String>,
+        /// Use sessionStorage instead of localStorage.
+        #[arg(short, long)]
+        session: bool,
+    },
+    /// Open a new tab.
+    TabNew {
+        /// URL to open (defaults to about:blank).
+        url: Option<String>,
+    },
+    /// List all open tabs.
+    TabList,
+    /// Switch to a tab by index.
+    TabSelect {
+        /// Tab index (0-based).
+        index: usize,
+    },
+    /// Close a tab by index.
+    TabClose {
+        /// Tab index (0-based, defaults to active tab).
+        index: Option<usize>,
+    },
+    /// Get captured console messages (drains buffer).
+    Console,
+    /// Get captured JS errors (drains buffer).
+    Errors,
     /// Check daemon and browser status.
     Status,
     /// Close the browser and stop the daemon.
@@ -208,13 +272,29 @@ fn build_request(cmd: &Command) -> Request {
             url: url.clone(),
             wait: WaitStrategy::Load,
         },
-        Command::Snapshot { interactive, compact } => Request::Snapshot {
-            options: brother::SnapshotOptions::default()
+        Command::Snapshot {
+            interactive,
+            compact,
+            depth,
+            selector,
+            cursor,
+        } => {
+            let mut opts = brother::SnapshotOptions::default()
                 .interactive_only(*interactive)
-                .compact(*compact),
+                .compact(*compact)
+                .max_depth(*depth)
+                .cursor_interactive(*cursor);
+            if let Some(sel) = selector {
+                opts = opts.selector(sel.clone());
+            }
+            Request::Snapshot { options: opts }
+        }
+        Command::Click { target } => Request::Click {
+            target: target.clone(),
         },
-        Command::Click { target } => Request::Click { target: target.clone() },
-        Command::Dblclick { target } => Request::DblClick { target: target.clone() },
+        Command::Dblclick { target } => Request::DblClick {
+            target: target.clone(),
+        },
         Command::Fill { target, value } => Request::Fill {
             target: target.clone(),
             value: value.clone(),
@@ -228,24 +308,107 @@ fn build_request(cmd: &Command) -> Request {
             target: target.clone(),
             value: value.clone(),
         },
-        Command::Check { target } => Request::Check { target: target.clone() },
-        Command::Uncheck { target } => Request::Uncheck { target: target.clone() },
-        Command::Hover { target } => Request::Hover { target: target.clone() },
-        Command::Focus { target } => Request::Focus { target: target.clone() },
-        Command::Scroll { direction, pixels, target } => Request::Scroll {
+        Command::Check { target } => Request::Check {
+            target: target.clone(),
+        },
+        Command::Uncheck { target } => Request::Uncheck {
+            target: target.clone(),
+        },
+        Command::Hover { target } => Request::Hover {
+            target: target.clone(),
+        },
+        Command::Focus { target } => Request::Focus {
+            target: target.clone(),
+        },
+        Command::Scroll {
+            direction,
+            pixels,
+            target,
+        } => Request::Scroll {
             direction: parse_direction(direction),
             pixels: *pixels,
             target: target.clone(),
         },
         Command::Screenshot { .. } => Request::Screenshot { full_page: false },
-        Command::Eval { expression } => Request::Eval { expression: expression.clone() },
-        Command::Get { what, target, attr } => build_get_request(what, target.as_deref(), attr.as_deref()),
+        Command::Eval { expression } => Request::Eval {
+            expression: expression.clone(),
+        },
+        Command::Get { what, target, attr } => {
+            build_get_request(what, target.as_deref(), attr.as_deref())
+        }
         Command::Back => Request::Back,
         Command::Forward => Request::Forward,
         Command::Reload => Request::Reload,
-        Command::Wait { target, text, url, load, function, timeout } => {
-            build_wait_request(target.as_deref(), text.as_deref(), url.as_deref(), load.as_deref(), function.as_deref(), *timeout)
-        }
+        Command::Wait {
+            target,
+            text,
+            url,
+            load,
+            function,
+            timeout,
+        } => build_wait_request(
+            target.as_deref(),
+            text.as_deref(),
+            url.as_deref(),
+            load.as_deref(),
+            function.as_deref(),
+            *timeout,
+        ),
+        Command::Dialog { action, text } => match action.as_str() {
+            "accept" => Request::DialogAccept {
+                prompt_text: text.clone(),
+            },
+            "dismiss" => Request::DialogDismiss,
+            // "message" and any unknown variant default to DialogMessage
+            _ => Request::DialogMessage,
+        },
+        Command::Cookie { action, value } => match action.as_str() {
+            "set" => Request::SetCookie {
+                cookie: value.clone().unwrap_or_default(),
+            },
+            "clear" => Request::ClearCookies,
+            // "get" and any unknown variant default to GetCookies
+            _ => Request::GetCookies,
+        },
+        Command::Storage {
+            action,
+            key,
+            value,
+            session,
+        } => match action.as_str() {
+            "set" => Request::SetStorage {
+                key: key.clone().unwrap_or_default(),
+                value: value.clone().unwrap_or_default(),
+                session: *session,
+            },
+            "clear" => Request::ClearStorage { session: *session },
+            // "get" and any unknown variant default to GetStorage
+            _ => Request::GetStorage {
+                key: key.clone().unwrap_or_default(),
+                session: *session,
+            },
+        },
+        Command::StateCheck { what, target } => match what.as_str() {
+            "enabled" => Request::IsEnabled {
+                target: target.clone(),
+            },
+            "checked" => Request::IsChecked {
+                target: target.clone(),
+            },
+            "count" => Request::Count {
+                selector: target.clone(),
+            },
+            // "visible" and any unknown variant default to IsVisible
+            _ => Request::IsVisible {
+                target: target.clone(),
+            },
+        },
+        Command::TabNew { url } => Request::TabNew { url: url.clone() },
+        Command::TabList => Request::TabList,
+        Command::TabSelect { index } => Request::TabSelect { index: *index },
+        Command::TabClose { index } => Request::TabClose { index: *index },
+        Command::Console => Request::Console,
+        Command::Errors => Request::Errors,
         Command::Status | Command::Daemon => Request::Status,
         Command::Close => Request::Close,
     }
@@ -292,22 +455,37 @@ fn build_wait_request(
 ) -> Request {
     // Priority: explicit flags first, then positional target
     let condition = if let Some(t) = text {
-        WaitCondition::Text { text: t.to_owned(), timeout_ms: timeout }
+        WaitCondition::Text {
+            text: t.to_owned(),
+            timeout_ms: timeout,
+        }
     } else if let Some(u) = url {
-        WaitCondition::Url { pattern: u.to_owned(), timeout_ms: timeout }
+        WaitCondition::Url {
+            pattern: u.to_owned(),
+            timeout_ms: timeout,
+        }
     } else if let Some(f) = function {
-        WaitCondition::Function { expression: f.to_owned(), timeout_ms: timeout }
+        WaitCondition::Function {
+            expression: f.to_owned(),
+            timeout_ms: timeout,
+        }
     } else if let Some(l) = load {
         let state = match l {
             "domcontentloaded" => WaitStrategy::DomContentLoaded,
             "networkidle" => WaitStrategy::NetworkIdle,
             _ => WaitStrategy::Load,
         };
-        WaitCondition::LoadState { state, timeout_ms: timeout }
+        WaitCondition::LoadState {
+            state,
+            timeout_ms: timeout,
+        }
     } else if let Some(sel) = target {
         // Numeric → duration; otherwise → CSS selector
         sel.parse::<u64>().map_or_else(
-            |_| WaitCondition::Selector { selector: sel.to_owned(), timeout_ms: timeout },
+            |_| WaitCondition::Selector {
+                selector: sel.to_owned(),
+                timeout_ms: timeout,
+            },
             |ms| WaitCondition::Duration { ms },
         )
     } else {
@@ -322,16 +500,23 @@ fn print_response(cmd: &Command, response: Response, json_mode: bool) {
         Response::Ok { data } => {
             if json_mode {
                 let val = response_to_json(data.as_ref());
-                println!("{}", serde_json::to_string_pretty(&val).expect("valid json"));
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&val).expect("valid json")
+                );
             } else {
                 print_plain(cmd, data.as_ref());
             }
         }
         Response::Error { message } => {
             if json_mode {
-                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                    "success": false, "error": message,
-                })).expect("valid json"));
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "success": false, "error": message,
+                    }))
+                    .expect("valid json")
+                );
             } else {
                 eprintln!("error: {message}");
             }
@@ -377,10 +562,53 @@ fn print_plain(cmd: &Command, data: Option<&ResponseData>) {
         }
         Some(ResponseData::Eval { value }) => println!("{value}"),
         Some(ResponseData::Text { text }) => println!("{text}"),
-        Some(ResponseData::Status { browser_running, page_url }) => {
-            println!("browser: {}", if *browser_running { "running" } else { "stopped" });
+        Some(ResponseData::Status {
+            browser_running,
+            page_url,
+        }) => {
+            println!(
+                "browser: {}",
+                if *browser_running {
+                    "running"
+                } else {
+                    "stopped"
+                }
+            );
             if let Some(url) = page_url {
                 println!("page: {url}");
+            }
+        }
+        Some(ResponseData::Logs { entries }) => {
+            if let Some(arr) = entries.as_array() {
+                if arr.is_empty() {
+                    println!("(no entries)");
+                } else {
+                    for entry in arr {
+                        if let Some(level) = entry.get("level").and_then(|v| v.as_str()) {
+                            let text = entry.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                            println!("[{level}] {text}");
+                        } else if let Some(msg) = entry.get("message").and_then(|v| v.as_str()) {
+                            println!("[error] {msg}");
+                        }
+                    }
+                }
+            }
+        }
+        Some(ResponseData::TabList { tabs, active }) => {
+            if let Some(arr) = tabs.as_array() {
+                for tab in arr {
+                    let idx = tab
+                        .get("index")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0);
+                    let url = tab
+                        .get("url")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("(unknown)");
+                    #[allow(clippy::cast_possible_truncation)]
+                    let marker = if idx as usize == *active { " *" } else { "" };
+                    println!("[{idx}] {url}{marker}");
+                }
             }
         }
         None => println!("ok"),

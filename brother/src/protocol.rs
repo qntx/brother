@@ -149,12 +149,102 @@ pub enum Request {
         attribute: String,
     },
 
+    // -- State checks -------------------------------------------------------
+    /// Check if an element is visible.
+    IsVisible {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Check if an element is enabled.
+    IsEnabled {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Check if a checkbox/radio is checked.
+    IsChecked {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Count elements matching a CSS selector.
+    Count {
+        /// CSS selector.
+        selector: String,
+    },
+
     // -- Wait --------------------------------------------------------------
     /// Wait for a condition.
     Wait {
         /// What to wait for.
         condition: WaitCondition,
     },
+
+    // -- Dialog handling -----------------------------------------------------
+    /// Get the current dialog message (if any).
+    DialogMessage,
+    /// Accept (OK) the current dialog, optionally with prompt text.
+    DialogAccept {
+        /// Text to enter for prompt dialogs.
+        prompt_text: Option<String>,
+    },
+    /// Dismiss (Cancel) the current dialog.
+    DialogDismiss,
+
+    // -- Cookie / Storage ---------------------------------------------------
+    /// Get all cookies.
+    GetCookies,
+    /// Set a cookie (e.g. `"name=value; path=/"`).
+    SetCookie {
+        /// Cookie string.
+        cookie: String,
+    },
+    /// Clear all cookies.
+    ClearCookies,
+    /// Get a storage item.
+    GetStorage {
+        /// Key name.
+        key: String,
+        /// Use sessionStorage instead of localStorage.
+        session: bool,
+    },
+    /// Set a storage item.
+    SetStorage {
+        /// Key name.
+        key: String,
+        /// Value.
+        value: String,
+        /// Use sessionStorage instead of localStorage.
+        session: bool,
+    },
+    /// Clear storage.
+    ClearStorage {
+        /// Use sessionStorage instead of localStorage.
+        session: bool,
+    },
+
+    // -- Tab management -----------------------------------------------------
+    /// Open a new tab (optionally navigate to a URL).
+    TabNew {
+        /// URL to navigate to (defaults to `about:blank`).
+        url: Option<String>,
+    },
+    /// List all open tabs.
+    TabList,
+    /// Switch to a tab by index (0-based).
+    TabSelect {
+        /// Tab index.
+        index: usize,
+    },
+    /// Close a tab by index (0-based). Closes active tab if omitted.
+    TabClose {
+        /// Tab index (None = active).
+        index: Option<usize>,
+    },
+
+    // -- Debug -------------------------------------------------------------
+    /// Get captured console messages (drains the buffer).
+    Console,
+    /// Get captured JS errors (drains the buffer).
+    Errors,
 
     // -- Lifecycle ---------------------------------------------------------
     /// Check daemon health / browser status.
@@ -341,6 +431,18 @@ pub enum ResponseData {
         browser_running: bool,
         /// Current page URL (if any).
         page_url: Option<String>,
+    },
+    /// Console messages or JS errors (JSON array).
+    Logs {
+        /// Serialized log entries.
+        entries: serde_json::Value,
+    },
+    /// Tab list result.
+    TabList {
+        /// Tab descriptions: `[{index, url, active}]`.
+        tabs: serde_json::Value,
+        /// Currently active tab index.
+        active: usize,
     },
 }
 

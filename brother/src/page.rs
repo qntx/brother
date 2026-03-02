@@ -16,14 +16,51 @@ use chromiumoxide::cdp::browser_protocol::input::{
 use chromiumoxide::cdp::browser_protocol::page::{
     CaptureScreenshotFormat, GetNavigationHistoryParams, NavigateToHistoryEntryParams,
 };
-use chromiumoxide::cdp::js_protocol::runtime::{CallFunctionOnParams, EvaluateParams};
+use chromiumoxide::cdp::js_protocol::runtime::{
+    CallFunctionOnParams, EvaluateParams, EventConsoleApiCalled, EventExceptionThrown,
+};
 use chromiumoxide::layout::Point;
 use chromiumoxide::page::ScreenshotParams;
+use futures::StreamExt;
+use serde::Serialize;
 use tokio::sync::Mutex;
 
 use crate::error::{Error, Result};
 use crate::protocol::ScrollDirection;
-use crate::snapshot::{self, Ref, RefMap, Snapshot, SnapshotOptions};
+use crate::snapshot::{self, CursorItem, Ref, RefMap, Snapshot, SnapshotOptions};
+
+/// A captured console message from the browser.
+#[derive(Debug, Clone, Serialize)]
+pub struct ConsoleEntry {
+    /// Log level: `log`, `warn`, `error`, `info`, `debug`, etc.
+    pub level: String,
+    /// Serialized message text.
+    pub text: String,
+}
+
+/// A captured `JavaScript` error from the browser.
+#[derive(Debug, Clone, Serialize)]
+pub struct JsError {
+    /// Error message text.
+    pub message: String,
+}
+
+/// Shared log buffer (bounded to prevent unbounded growth).
+type LogBuf<T> = Arc<Mutex<Vec<T>>>;
+
+/// Maximum number of console/error entries to buffer per page.
+const MAX_LOG_ENTRIES: usize = 500;
+
+/// Cached dialog info from `Page.javascriptDialogOpening`.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct DialogInfo {
+    /// Dialog type: `alert`, `confirm`, `prompt`, `beforeunload`.
+    pub dialog_type: String,
+    /// The dialog message text.
+    pub message: String,
+    /// Default prompt value (for prompt dialogs).
+    pub default_prompt: String,
+}
 
 /// A browser page with ref-based interaction support.
 ///
@@ -35,14 +72,100 @@ pub struct Page {
     inner: chromiumoxide::Page,
     /// Cached refs from the most recent snapshot.
     refs: Arc<Mutex<RefMap>>,
+    /// Console messages captured from `Runtime.consoleAPICalled`.
+    console_logs: LogBuf<ConsoleEntry>,
+    /// JS errors captured from `Runtime.exceptionThrown`.
+    js_errors: LogBuf<JsError>,
+    /// Most recent dialog info (if a dialog is open).
+    dialog: Arc<Mutex<Option<DialogInfo>>>,
 }
 
 impl Page {
-    /// Wrap a chromiumoxide page.
+    /// Wrap a chromiumoxide page and start background event listeners
+    /// for console messages and JS exceptions.
     pub(crate) fn new(inner: chromiumoxide::Page) -> Self {
+        let console_logs: LogBuf<ConsoleEntry> = Arc::new(Mutex::new(Vec::new()));
+        let js_errors: LogBuf<JsError> = Arc::new(Mutex::new(Vec::new()));
+
+        // Spawn background listener for console.log/warn/error/...
+        {
+            let page = inner.clone();
+            let buf = Arc::clone(&console_logs);
+            tokio::spawn(async move {
+                let Ok(mut stream) = page.event_listener::<EventConsoleApiCalled>().await else {
+                    return;
+                };
+                while let Some(event) = stream.next().await {
+                    let level = format!("{:?}", event.r#type).to_ascii_lowercase();
+                    let text = event
+                        .args
+                        .iter()
+                        .filter_map(|a| {
+                            a.value
+                                .as_ref()
+                                .map(|v| v.to_string().trim_matches('"').to_owned())
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let mut guard = buf.lock().await;
+                    if guard.len() < MAX_LOG_ENTRIES {
+                        guard.push(ConsoleEntry { level, text });
+                    }
+                }
+            });
+        }
+
+        // Spawn background listener for uncaught JS exceptions
+        {
+            let page = inner.clone();
+            let buf = Arc::clone(&js_errors);
+            tokio::spawn(async move {
+                let Ok(mut stream) = page.event_listener::<EventExceptionThrown>().await else {
+                    return;
+                };
+                while let Some(event) = stream.next().await {
+                    let message = event
+                        .exception_details
+                        .exception
+                        .as_ref()
+                        .and_then(|e| e.description.clone())
+                        .unwrap_or_else(|| event.exception_details.text.clone());
+                    let mut guard = buf.lock().await;
+                    if guard.len() < MAX_LOG_ENTRIES {
+                        guard.push(JsError { message });
+                    }
+                }
+            });
+        }
+
+        // Spawn background listener for JavaScript dialogs (alert/confirm/prompt)
+        let dialog: Arc<Mutex<Option<DialogInfo>>> = Arc::new(Mutex::new(None));
+        {
+            let page = inner.clone();
+            let buf = Arc::clone(&dialog);
+            tokio::spawn(async move {
+                use chromiumoxide::cdp::browser_protocol::page::EventJavascriptDialogOpening;
+                let Ok(mut stream) = page.event_listener::<EventJavascriptDialogOpening>().await
+                else {
+                    return;
+                };
+                while let Some(event) = stream.next().await {
+                    let info = DialogInfo {
+                        dialog_type: format!("{:?}", event.r#type).to_ascii_lowercase(),
+                        message: event.message.clone(),
+                        default_prompt: event.default_prompt.clone().unwrap_or_default(),
+                    };
+                    *buf.lock().await = Some(info);
+                }
+            });
+        }
+
         Self {
             inner,
             refs: Arc::new(Mutex::new(RefMap::new())),
+            console_logs,
+            js_errors,
+            dialog,
         }
     }
 
@@ -141,12 +264,66 @@ impl Page {
             .and_then(serde_json::from_value)
             .map_err(|e| Error::Snapshot(format!("failed to parse AX tree: {e}")))?;
 
-        let snap = snapshot::build_snapshot(&nodes, &options);
+        let mut snap = snapshot::build_snapshot(&nodes, &options);
+
+        // Append cursor-interactive elements (cursor:pointer / onclick / tabindex)
+        // that have no proper ARIA roles and were missed by the AX tree.
+        if options.cursor_interactive {
+            self.append_cursor_interactive_elements(&mut snap).await;
+        }
 
         // Cache refs for subsequent ref-based interactions
         *self.refs.lock().await = snap.refs().clone();
 
         Ok(snap)
+    }
+
+    /// Detect elements with cursor:pointer / onclick / tabindex that lack ARIA
+    /// roles and append them as extra refs to the snapshot.
+    async fn append_cursor_interactive_elements(&self, snap: &mut Snapshot) {
+        // JS finds elements that are cursor-interactive but not natively interactive
+        let js = r"(() => {
+            const interactive = new Set([
+                'a','button','input','select','textarea','details','summary'
+            ]);
+            const results = [];
+            for (const el of document.querySelectorAll('*')) {
+                if (interactive.has(el.tagName.toLowerCase())) continue;
+                const role = el.getAttribute('role');
+                if (role && ['button','link','textbox','checkbox','radio',
+                    'combobox','menuitem','option','tab','switch'].includes(role)) continue;
+                const cs = getComputedStyle(el);
+                const ptr = cs.cursor === 'pointer';
+                const click = el.hasAttribute('onclick') || el.onclick !== null;
+                const ti = el.getAttribute('tabindex');
+                const tab = ti !== null && ti !== '-1';
+                if (!ptr && !click && !tab) continue;
+                if (ptr && !click && !tab) {
+                    const p = el.parentElement;
+                    if (p && getComputedStyle(p).cursor === 'pointer') continue;
+                }
+                const text = (el.textContent || '').trim().slice(0, 100);
+                if (!text) continue;
+                const r = el.getBoundingClientRect();
+                if (r.width === 0 || r.height === 0) continue;
+                const hints = [];
+                if (ptr) hints.push('cursor:pointer');
+                if (click) hints.push('onclick');
+                if (tab) hints.push('tabindex');
+                results.push({ text, hints: hints.join(', ') });
+            }
+            return JSON.stringify(results);
+        })()";
+
+        let Ok(val) = self.eval(js).await else {
+            return;
+        };
+        let json_str = val.as_str().unwrap_or("[]");
+        let Ok(items) = serde_json::from_str::<Vec<CursorItem>>(json_str) else {
+            return;
+        };
+
+        snap.append_cursor_elements(&items);
     }
 
     // -----------------------------------------------------------------------
@@ -393,6 +570,163 @@ impl Page {
     }
 
     // -----------------------------------------------------------------------
+    // State checks
+    // -----------------------------------------------------------------------
+
+    /// Check if an element is visible (has layout and non-zero size).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the element is not found.
+    pub async fn is_visible(&self, target: &str) -> Result<bool> {
+        self.call_bool_on_target(
+            target,
+            "function() { const r = this.getBoundingClientRect(); \
+             return r.width > 0 && r.height > 0 && getComputedStyle(this).visibility !== 'hidden'; }",
+        )
+        .await
+    }
+
+    /// Check if an element is enabled (not disabled).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the element is not found.
+    pub async fn is_enabled(&self, target: &str) -> Result<bool> {
+        self.call_bool_on_target(target, "function() { return !this.disabled; }")
+            .await
+    }
+
+    /// Check if a checkbox/radio is checked.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the element is not found.
+    pub async fn is_checked(&self, target: &str) -> Result<bool> {
+        self.call_bool_on_target(target, "function() { return !!this.checked; }")
+            .await
+    }
+
+    /// Count elements matching a CSS selector.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if JS evaluation fails.
+    pub async fn count(&self, selector: &str) -> Result<usize> {
+        let escaped = selector.replace('\\', "\\\\").replace('\'', "\\'");
+        let val = self
+            .eval(&format!("document.querySelectorAll('{escaped}').length"))
+            .await?;
+        #[allow(clippy::cast_possible_truncation)]
+        Ok(val.as_u64().unwrap_or(0) as usize)
+    }
+
+    // -----------------------------------------------------------------------
+    // Cookie / Storage
+    // -----------------------------------------------------------------------
+
+    /// Get all cookies for the current page.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the CDP command fails.
+    pub async fn get_cookies(&self) -> Result<serde_json::Value> {
+        use chromiumoxide::cdp::browser_protocol::network::GetCookiesParams;
+        let result = self
+            .inner
+            .execute(GetCookiesParams::default())
+            .await
+            .map_err(Error::Cdp)?;
+        serde_json::to_value(&result.result.cookies)
+            .map_err(|e| Error::Snapshot(format!("cookie serialize: {e}")))
+    }
+
+    /// Set a cookie via JS `document.cookie`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if JS evaluation fails.
+    pub async fn set_cookie(&self, cookie_str: &str) -> Result<()> {
+        let escaped = cookie_str.replace('\\', "\\\\").replace('\'', "\\'");
+        self.eval(&format!("document.cookie = '{escaped}'")).await?;
+        Ok(())
+    }
+
+    /// Clear all cookies for the current page.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the CDP command fails.
+    pub async fn clear_cookies(&self) -> Result<()> {
+        use chromiumoxide::cdp::browser_protocol::network::{
+            DeleteCookiesParams, GetCookiesParams,
+        };
+        let result = self
+            .inner
+            .execute(GetCookiesParams::default())
+            .await
+            .map_err(Error::Cdp)?;
+        for cookie in &result.result.cookies {
+            self.inner
+                .execute(DeleteCookiesParams::new(cookie.name.clone()))
+                .await
+                .map_err(Error::Cdp)?;
+        }
+        Ok(())
+    }
+
+    /// Get a `localStorage` or `sessionStorage` item.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if JS evaluation fails.
+    pub async fn get_storage(&self, key: &str, session: bool) -> Result<String> {
+        let storage = if session {
+            "sessionStorage"
+        } else {
+            "localStorage"
+        };
+        let escaped = key.replace('\\', "\\\\").replace('\'', "\\'");
+        let val = self
+            .eval(&format!("{storage}.getItem('{escaped}')"))
+            .await?;
+        Ok(val.as_str().unwrap_or("").to_owned())
+    }
+
+    /// Set a `localStorage` or `sessionStorage` item.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if JS evaluation fails.
+    pub async fn set_storage(&self, key: &str, value: &str, session: bool) -> Result<()> {
+        let storage = if session {
+            "sessionStorage"
+        } else {
+            "localStorage"
+        };
+        let ek = key.replace('\\', "\\\\").replace('\'', "\\'");
+        let ev = value.replace('\\', "\\\\").replace('\'', "\\'");
+        self.eval(&format!("{storage}.setItem('{ek}', '{ev}')"))
+            .await?;
+        Ok(())
+    }
+
+    /// Clear `localStorage` or `sessionStorage`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if JS evaluation fails.
+    pub async fn clear_storage(&self, session: bool) -> Result<()> {
+        let storage = if session {
+            "sessionStorage"
+        } else {
+            "localStorage"
+        };
+        self.eval(&format!("{storage}.clear()")).await?;
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
     // Screenshot
     // -----------------------------------------------------------------------
 
@@ -615,6 +949,61 @@ impl Page {
     }
 
     // -----------------------------------------------------------------------
+    // Console / Error logs
+    // -----------------------------------------------------------------------
+
+    /// Return all captured console messages and clear the buffer.
+    pub async fn take_console_logs(&self) -> Vec<ConsoleEntry> {
+        std::mem::take(&mut *self.console_logs.lock().await)
+    }
+
+    /// Return all captured JS errors and clear the buffer.
+    pub async fn take_js_errors(&self) -> Vec<JsError> {
+        std::mem::take(&mut *self.js_errors.lock().await)
+    }
+
+    // -----------------------------------------------------------------------
+    // Dialog handling
+    // -----------------------------------------------------------------------
+
+    /// Get the most recent dialog info (if a dialog is open).
+    pub async fn dialog_message(&self) -> Option<DialogInfo> {
+        self.dialog.lock().await.clone()
+    }
+
+    /// Accept (OK) the current `JavaScript` dialog, optionally providing
+    /// prompt text.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the CDP command fails.
+    pub async fn dialog_accept(&self, prompt_text: Option<&str>) -> Result<()> {
+        use chromiumoxide::cdp::browser_protocol::page::HandleJavaScriptDialogParams;
+        let mut params = HandleJavaScriptDialogParams::new(true);
+        if let Some(text) = prompt_text {
+            params.prompt_text = Some(text.to_owned());
+        }
+        self.inner.execute(params).await.map_err(Error::Cdp)?;
+        *self.dialog.lock().await = None;
+        Ok(())
+    }
+
+    /// Dismiss (Cancel) the current `JavaScript` dialog.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the CDP command fails.
+    pub async fn dialog_dismiss(&self) -> Result<()> {
+        use chromiumoxide::cdp::browser_protocol::page::HandleJavaScriptDialogParams;
+        self.inner
+            .execute(HandleJavaScriptDialogParams::new(false))
+            .await
+            .map_err(Error::Cdp)?;
+        *self.dialog.lock().await = None;
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
     // Low-level access
     // -----------------------------------------------------------------------
 
@@ -695,6 +1084,23 @@ impl Page {
             .await
             .map_err(Error::Cdp)?;
         Ok(())
+    }
+
+    /// Call a JS function on a target and return a boolean result.
+    async fn call_bool_on_target(&self, target: &str, function: &str) -> Result<bool> {
+        let oid = self.resolve_target_object(target).await?;
+        let result = self
+            .inner
+            .evaluate_function(
+                CallFunctionOnParams::builder()
+                    .object_id(oid)
+                    .function_declaration(function)
+                    .build()
+                    .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?,
+            )
+            .await
+            .map_err(Error::Cdp)?;
+        Ok(result.into_value::<bool>().unwrap_or(false))
     }
 
     /// Call a JS function on a target and return the string result.
