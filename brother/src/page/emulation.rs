@@ -181,8 +181,6 @@ impl Page {
         Ok(())
     }
 
-    // -- Script & style injection, DOM event dispatch --
-
     /// Add a script to evaluate on every new document (before page JS).
     pub async fn add_init_script(&self, script: &str) -> Result<()> {
         use chromiumoxide::cdp::browser_protocol::page::AddScriptToEvaluateOnNewDocumentParams;

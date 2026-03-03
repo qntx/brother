@@ -257,8 +257,6 @@ impl Page {
         Ok(())
     }
 
-    // -- DOM manipulation (from dom.rs) --
-
     /// Upload files to a `<input type="file">` element.
     pub async fn upload(&self, target: &str, files: &[String]) -> Result<()> {
         use chromiumoxide::cdp::browser_protocol::dom::{

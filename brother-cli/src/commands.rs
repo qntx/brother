@@ -609,7 +609,6 @@ pub enum Command {
         #[arg(long)]
         clear: bool,
     },
-    // -- Diff --------------------------------------------------------------
     /// Compare current snapshot against a baseline file or text.
     #[command(name = "diff")]
     DiffSnapshot {
@@ -618,12 +617,10 @@ pub enum Command {
         sub: DiffSub,
     },
 
-    // -- State persistence --------------------------------------------------
     /// Save/load browser state (cookies + storage).
     #[command(subcommand)]
     State(StateSub),
 
-    // -- Debug / Tracing --------------------------------------------------
     /// Start or stop CDP tracing.
     Trace {
         /// `start` or `stop`.
@@ -647,7 +644,6 @@ pub enum Command {
         output: Option<String>,
     },
 
-    // -- Screencast ---------------------------------------------------------
     /// Start or stop CDP screencast (screen frame capture).
     Screencast {
         /// `start` or `stop`.
@@ -666,7 +662,6 @@ pub enum Command {
         max_height: Option<u32>,
     },
 
-    // -- HAR recording -----------------------------------------------------
     /// Start or stop HAR (HTTP Archive) recording.
     Har {
         /// `start` or `stop`.
@@ -676,7 +671,6 @@ pub enum Command {
         output: Option<String>,
     },
 
-    // -- Security ---------------------------------------------------------
     /// Set allowed domains for navigation (security filter).
     AllowedDomains {
         /// Domain patterns (e.g. `example.com *.github.com`).

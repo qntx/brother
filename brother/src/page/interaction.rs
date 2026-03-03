@@ -211,8 +211,6 @@ impl Page {
         Ok(())
     }
 
-    // -- Keyboard input --
-
     /// Press a key or combo (e.g. `"Enter"`, `"Tab"`, `"Control+a"`).
     ///
     /// Modifier keys are held down while the final key is pressed/released,
@@ -275,8 +273,6 @@ impl Page {
             .map_err(Error::Cdp)?;
         Ok(())
     }
-
-    // -- Mouse input --
 
     /// Move the mouse to absolute coordinates.
     pub async fn mouse_move(&self, x: f64, y: f64) -> Result<()> {
@@ -349,8 +345,6 @@ impl Page {
         self.inner.execute(end).await.map_err(Error::Cdp)?;
         Ok(())
     }
-
-    // -- Clipboard --
 
     /// Read text from the clipboard (grants permission first).
     pub async fn clipboard_read(&self) -> Result<String> {

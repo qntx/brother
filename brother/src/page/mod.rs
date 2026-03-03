@@ -579,8 +579,6 @@ impl Page {
         }
     }
 
-    // -- Console & error log capture --
-
     /// Return all captured console messages and clear the buffer.
     pub async fn take_console_logs(&self) -> Vec<ConsoleEntry> {
         std::mem::take(&mut *self.console_logs.lock().await)
@@ -590,8 +588,6 @@ impl Page {
     pub async fn take_js_errors(&self) -> Vec<JsError> {
         std::mem::take(&mut *self.js_errors.lock().await)
     }
-
-    // -- JavaScript evaluation --
 
     /// Evaluate a `JavaScript` expression and return the raw result.
     pub async fn eval(&self, expression: &str) -> Result<serde_json::Value> {
@@ -608,8 +604,6 @@ impl Page {
             .into_value()
             .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e.to_string())))
     }
-
-    // -- Dialog handling --
 
     /// Get the most recent dialog info (if a dialog is open).
     pub async fn dialog_message(&self) -> Option<DialogInfo> {

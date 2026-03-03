@@ -51,8 +51,6 @@ impl Page {
         Ok(())
     }
 
-    // -- Wait methods --
-
     /// Wait for a CSS selector to appear in the DOM.
     pub async fn wait_for_selector(&self, selector: &str, timeout: Duration) -> Result<()> {
         self.poll_js(
