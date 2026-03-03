@@ -29,13 +29,16 @@ impl Page {
     /// Returns an error if the element is not found.
     pub async fn dblclick(&self, target: &str) -> Result<()> {
         let center = self.resolve_target_center(target).await?;
-        // Two rapid clicks via CDP Input domain
-        for _ in 0..2 {
-            self.dispatch_mouse(DispatchMouseEventType::MousePressed, center, 1)
-                .await?;
-            self.dispatch_mouse(DispatchMouseEventType::MouseReleased, center, 1)
-                .await?;
-        }
+        // First click (click_count = 1)
+        self.dispatch_mouse(DispatchMouseEventType::MousePressed, center, 1)
+            .await?;
+        self.dispatch_mouse(DispatchMouseEventType::MouseReleased, center, 1)
+            .await?;
+        // Second click (click_count = 2) — triggers the browser dblclick event
+        self.dispatch_mouse(DispatchMouseEventType::MousePressed, center, 2)
+            .await?;
+        self.dispatch_mouse(DispatchMouseEventType::MouseReleased, center, 2)
+            .await?;
         Ok(())
     }
 
@@ -107,25 +110,31 @@ impl Page {
         Ok(())
     }
 
-    /// Check a checkbox.
+    /// Check a checkbox (scrolls into view first).
     ///
     /// # Errors
     ///
     /// Returns an error if the element is not found.
     pub async fn check(&self, target: &str) -> Result<()> {
-        self.call_on_target(target, "function() { if (!this.checked) this.click(); }")
-            .await?;
+        self.call_on_target(
+            target,
+            "function() { this.scrollIntoView({block:'center'}); if (!this.checked) this.click(); }",
+        )
+        .await?;
         Ok(())
     }
 
-    /// Uncheck a checkbox.
+    /// Uncheck a checkbox (scrolls into view first).
     ///
     /// # Errors
     ///
     /// Returns an error if the element is not found.
     pub async fn uncheck(&self, target: &str) -> Result<()> {
-        self.call_on_target(target, "function() { if (this.checked) this.click(); }")
-            .await?;
+        self.call_on_target(
+            target,
+            "function() { this.scrollIntoView({block:'center'}); if (this.checked) this.click(); }",
+        )
+        .await?;
         Ok(())
     }
 

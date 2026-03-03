@@ -282,22 +282,43 @@ impl Page {
         self.eval(&js).await
     }
 
-    /// Highlight an element with a visible red border overlay.
+    /// Highlight an element using CDP `Overlay.highlightNode`.
+    ///
+    /// This uses the DevTools overlay (non-intrusive — does **not** modify
+    /// the DOM or element styles). The highlight remains until the next
+    /// navigation or a call to `Overlay.hideHighlight`.
     ///
     /// # Errors
     ///
-    /// Returns an error if JS evaluation fails.
+    /// Returns an error if the element is not found or the CDP command fails.
     pub async fn highlight(&self, target: &str) -> Result<()> {
-        let escaped = target.replace('\\', "\\\\").replace('\'', "\\'");
-        let js = format!(
-            r"(() => {{
-                const el = document.querySelector('{escaped}');
-                if (!el) throw new Error('element not found: {escaped}');
-                el.style.outline = '2px solid red';
-                el.style.outlineOffset = '-1px';
-            }})()"
-        );
-        self.eval(&js).await?;
+        use chromiumoxide::cdp::browser_protocol::dom::Rgba;
+        use chromiumoxide::cdp::browser_protocol::overlay::{
+            HighlightConfig, HighlightNodeParams,
+        };
+
+        let object_id = self.resolve_target_object(target).await?;
+
+        let config = HighlightConfig {
+            content_color: Some(Rgba {
+                r: 111,
+                g: 168,
+                b: 220,
+                a: Some(0.66),
+            }),
+            border_color: Some(Rgba {
+                r: 255,
+                g: 229,
+                b: 153,
+                a: Some(0.66),
+            }),
+            show_info: Some(true),
+            ..Default::default()
+        };
+
+        let mut params = HighlightNodeParams::new(config);
+        params.object_id = Some(object_id);
+        self.inner.execute(params).await.map_err(Error::Cdp)?;
         Ok(())
     }
 }

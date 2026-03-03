@@ -78,10 +78,6 @@ struct EncryptedPayload {
     ciphertext: String,
 }
 
-// ---------------------------------------------------------------------------
-// Directory & validation
-// ---------------------------------------------------------------------------
-
 fn auth_dir() -> PathBuf {
     let base = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -117,10 +113,6 @@ fn profile_path(name: &str) -> Result<PathBuf, String> {
     validate_name(name)?;
     Ok(auth_dir().join(format!("{name}.json")))
 }
-
-// ---------------------------------------------------------------------------
-// Encryption key management
-// ---------------------------------------------------------------------------
 
 fn get_encryption_key() -> Result<[u8; 32], String> {
     // Try environment variable first
@@ -195,10 +187,6 @@ fn decrypt(payload: &EncryptedPayload, raw_key: &[u8; 32]) -> Result<Vec<u8>, St
         .decrypt(nonce, ct_bytes.as_ref())
         .map_err(|_| "decryption failed — wrong key or corrupted data".to_owned())
 }
-
-// ---------------------------------------------------------------------------
-// CRUD operations
-// ---------------------------------------------------------------------------
 
 fn read_profile(name: &str) -> Result<Option<AuthProfile>, String> {
     let path = profile_path(name)?;

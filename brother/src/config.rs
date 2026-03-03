@@ -182,10 +182,6 @@ impl BrowserConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Device presets
-// ---------------------------------------------------------------------------
-
 /// A named device preset with viewport dimensions and user-agent string.
 #[derive(Debug, Clone, Copy)]
 pub struct DevicePreset {

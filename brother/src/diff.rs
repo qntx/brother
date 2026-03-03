@@ -8,10 +8,6 @@ use std::fmt;
 
 use serde::Serialize;
 
-// ---------------------------------------------------------------------------
-// Text diff (Myers algorithm)
-// ---------------------------------------------------------------------------
-
 /// Result of comparing two text snapshots.
 #[derive(Debug, Clone, Serialize)]
 pub struct SnapshotDiff {
@@ -240,10 +236,6 @@ fn backtrack_myers<'a>(
     edits
 }
 
-// ---------------------------------------------------------------------------
-// Screenshot diff (RGBA pixel comparison)
-// ---------------------------------------------------------------------------
-
 /// Result of comparing two screenshots pixel-by-pixel.
 ///
 /// The raw RGBA buffers are produced by the daemon decoding PNGs via the
@@ -363,10 +355,6 @@ pub fn diff_rgba(
         height_b,
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

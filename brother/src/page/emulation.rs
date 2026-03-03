@@ -57,30 +57,19 @@ impl Page {
         Ok(())
     }
 
-    /// Toggle offline mode via JS fetch/XHR monkey-patch.
+    /// Toggle offline mode via CDP `Network.emulateNetworkConditions`.
+    ///
+    /// This intercepts **all** network activity (fetch, XHR, WebSocket,
+    /// images, scripts, etc.) at the protocol level.
     ///
     /// # Errors
     ///
-    /// Returns an error if JS evaluation fails.
+    /// Returns an error if the CDP command fails.
+    #[allow(deprecated)] // chromiumoxide marks it experimental, but the CDP method works fine
     pub async fn set_offline(&self, offline: bool) -> Result<()> {
-        let js = if offline {
-            r"(() => {
-                if (!window.__brother_offline) {
-                    window.__brother_offline = true;
-                    const F = window.fetch;
-                    window.__brother_orig_fetch = F;
-                    window.fetch = function() {
-                        if (window.__brother_offline) return Promise.reject(new TypeError('Network request failed (offline mode)'));
-                        return F.apply(this, arguments);
-                    };
-                } else {
-                    window.__brother_offline = true;
-                }
-            })()"
-        } else {
-            r"(() => { window.__brother_offline = false; })()"
-        };
-        self.eval(js).await?;
+        use chromiumoxide::cdp::browser_protocol::network::EmulateNetworkConditionsParams;
+        let params = EmulateNetworkConditionsParams::new(offline, 0., 0., 0.);
+        self.inner.execute(params).await.map_err(Error::Cdp)?;
         Ok(())
     }
 
@@ -161,12 +150,29 @@ impl Page {
         Ok(())
     }
 
-    /// Override the locale via JS `navigator.language/languages` override.
+    /// Override the locale via CDP `Network.setUserAgentOverride` (accept-language)
+    /// and JS `navigator.language/languages` override.
     ///
     /// # Errors
     ///
-    /// Returns an error if JS evaluation fails.
+    /// Returns an error if the CDP command or JS evaluation fails.
     pub async fn set_locale(&self, locale: &str) -> Result<()> {
+        use chromiumoxide::cdp::browser_protocol::network::SetUserAgentOverrideParams;
+        // Set accept-language at the protocol level (affects HTTP headers).
+        let mut params = SetUserAgentOverrideParams::new(String::new());
+        // Keep the current user-agent by reading it from navigator first.
+        let ua: String = self
+            .inner
+            .evaluate("navigator.userAgent")
+            .await
+            .map_err(Error::Cdp)?
+            .into_value()
+            .unwrap_or_default();
+        params.user_agent = ua;
+        params.accept_language = Some(locale.to_owned());
+        self.inner.execute(params).await.map_err(Error::Cdp)?;
+
+        // Also patch navigator.language / languages for JS-side access.
         let escaped = locale.replace('\'', "\\'");
         let js = format!(
             "Object.defineProperty(navigator, 'language', {{ get: () => '{escaped}' }}); \
