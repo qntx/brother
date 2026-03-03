@@ -1,9 +1,9 @@
-//! WebSocket stream server for screencast frames and input injection.
+//! `WebSocket` stream server for screencast frames and input injection.
 //!
-//! Starts a WebSocket server that:
-//! - Pushes CDP screencast frames (base64 JPEG/PNG) to connected clients.
+//! Starts a `WebSocket` server that:
+//! - Pushes `CDP` screencast frames (base64 JPEG/PNG) to connected clients.
 //! - Receives mouse/keyboard/touch input events from clients and injects
-//!   them into the browser via CDP.
+//!   them into the browser via `CDP`.
 //!
 //! Message protocol (JSON):
 //!
@@ -31,6 +31,54 @@ use brother::RawMouseEvent;
 
 use crate::daemon::state::{DaemonState, get_page};
 
+/// An input event received from a stream client.
+#[derive(Debug, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum InputEvent {
+    Mouse {
+        #[serde(default = "default_mouse_moved")]
+        event_type: String,
+        #[serde(default)]
+        x: f64,
+        #[serde(default)]
+        y: f64,
+        #[serde(default)]
+        button: Option<String>,
+        #[serde(default)]
+        click_count: Option<i64>,
+        #[serde(default)]
+        delta_x: Option<f64>,
+        #[serde(default)]
+        delta_y: Option<f64>,
+        #[serde(default)]
+        modifiers: Option<i64>,
+    },
+    Keyboard {
+        #[serde(default = "default_key_down")]
+        event_type: String,
+        #[serde(default)]
+        key: Option<String>,
+        #[serde(default)]
+        code: Option<String>,
+        #[serde(default)]
+        text: Option<String>,
+        #[serde(default)]
+        modifiers: Option<i64>,
+    },
+    Touch {
+        #[serde(default = "default_touch_start")]
+        event_type: String,
+        #[serde(default)]
+        points: Vec<[f64; 2]>,
+        #[serde(default)]
+        modifiers: Option<i64>,
+    },
+}
+
+fn default_mouse_moved() -> String { "mouseMoved".into() }
+fn default_key_down() -> String { "keyDown".into() }
+fn default_touch_start() -> String { "touchStart".into() }
+
 /// A screencast frame ready for broadcast.
 #[derive(Debug, Clone)]
 pub struct ScreencastFrame {
@@ -45,7 +93,7 @@ pub struct ScreencastFrame {
 pub struct StreamServerConfig {
     /// Bind address (e.g. `127.0.0.1:9223`).
     pub addr: SocketAddr,
-    /// Allowed origins for WebSocket connections (empty = allow all).
+    /// Allowed origins for `WebSocket` connections (empty = allow all).
     pub allowed_origins: Vec<String>,
 }
 
@@ -126,10 +174,10 @@ async fn handle_connection(
                             "data": f.data,
                             "timestamp": f.timestamp,
                         });
-                        if let Ok(text) = serde_json::to_string(&msg) {
-                            if ws_tx.send(Message::Text(text.into())).await.is_err() {
-                                break;
-                            }
+                        if let Ok(text) = serde_json::to_string(&msg)
+                            && ws_tx.send(Message::Text(text.into())).await.is_err()
+                        {
+                            break;
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -152,35 +200,29 @@ async fn handle_connection(
 }
 
 async fn handle_input_message(text: &str, state: &Arc<Mutex<DaemonState>>) {
-    let Ok(msg) = serde_json::from_str::<serde_json::Value>(text) else {
+    let Ok(event) = serde_json::from_str::<InputEvent>(text) else {
         return;
     };
-    let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
-
-    let page = match get_page(state).await {
-        Ok(p) => p,
-        Err(_) => return,
+    let Ok(page) = get_page(state).await else {
+        return;
     };
-
-    match msg_type {
-        "mouse" => {
-            let event_type = msg
-                .get("eventType")
-                .and_then(|v| v.as_str())
-                .unwrap_or("mouseMoved");
-            let x = msg.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let y = msg.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let button = msg.get("button").and_then(|v| v.as_str());
-            let click_count = msg.get("clickCount").and_then(|v| v.as_i64());
-            let delta_x = msg.get("deltaX").and_then(|v| v.as_f64());
-            let delta_y = msg.get("deltaY").and_then(|v| v.as_f64());
-            let modifiers = msg.get("modifiers").and_then(|v| v.as_i64());
+    match event {
+        InputEvent::Mouse {
+            event_type,
+            x,
+            y,
+            button,
+            click_count,
+            delta_x,
+            delta_y,
+            modifiers,
+        } => {
             let _ = page
                 .inject_mouse_event(RawMouseEvent {
-                    event_type,
+                    event_type: &event_type,
                     x,
                     y,
-                    button,
+                    button: button.as_deref(),
                     click_count,
                     delta_x,
                     delta_y,
@@ -188,46 +230,37 @@ async fn handle_input_message(text: &str, state: &Arc<Mutex<DaemonState>>) {
                 })
                 .await;
         }
-        "keyboard" => {
-            let event_type = msg
-                .get("eventType")
-                .and_then(|v| v.as_str())
-                .unwrap_or("keyDown");
-            let key = msg.get("key").and_then(|v| v.as_str());
-            let code = msg.get("code").and_then(|v| v.as_str());
-            let text = msg.get("text").and_then(|v| v.as_str());
-            let modifiers = msg.get("modifiers").and_then(|v| v.as_i64());
+        InputEvent::Keyboard {
+            event_type,
+            key,
+            code,
+            text,
+            modifiers,
+        } => {
             let _ = page
-                .inject_key_event(event_type, key, code, text, modifiers)
+                .inject_key_event(
+                    &event_type,
+                    key.as_deref(),
+                    code.as_deref(),
+                    text.as_deref(),
+                    modifiers,
+                )
                 .await;
         }
-        "touch" => {
-            let event_type = msg
-                .get("eventType")
-                .and_then(|v| v.as_str())
-                .unwrap_or("touchStart");
-            let points: Vec<(f64, f64)> = msg
-                .get("points")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|p| {
-                            let a = p.as_array()?;
-                            Some((a.first()?.as_f64()?, a.get(1)?.as_f64()?))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            let modifiers = msg.get("modifiers").and_then(|v| v.as_i64());
+        InputEvent::Touch {
+            event_type,
+            points,
+            modifiers,
+        } => {
+            let pts: Vec<(f64, f64)> = points.iter().map(|p| (p[0], p[1])).collect();
             let _ = page
-                .inject_touch_event(event_type, &points, modifiers)
+                .inject_touch_event(&event_type, &pts, modifiers)
                 .await;
         }
-        _ => {}
     }
 }
 
-/// WebSocket handshake callback that checks the Origin header.
+/// `WebSocket` handshake callback that checks the `Origin` header.
 struct OriginCheck(Arc<Vec<String>>);
 
 impl tokio_tungstenite::tungstenite::handshake::server::Callback for OriginCheck {

@@ -7,7 +7,8 @@ use super::types::{
     RouteAction, WaitCondition, WaitStrategy, default_click_count, default_content_type,
     default_diff_threshold, default_geo_accuracy, default_jpeg_quality, default_screencast_format,
     default_screencast_quality, default_screenshot_format, default_scroll_px, default_status,
-    default_timeout_ms, default_true, default_viewport_height, default_viewport_width,
+    default_swipe_distance, default_timeout_ms, default_true, default_viewport_height,
+    default_viewport_width,
 };
 
 /// A command sent from the CLI to the daemon.
@@ -505,6 +506,16 @@ pub enum Request {
     Tap {
         /// Ref or CSS selector.
         target: String,
+    },
+    /// Perform a touch swipe gesture on an element.
+    Swipe {
+        /// Ref or CSS selector.
+        target: String,
+        /// Direction: `up`, `down`, `left`, `right`.
+        direction: ScrollDirection,
+        /// Distance in pixels (default 300).
+        #[serde(default = "default_swipe_distance")]
+        distance: i64,
     },
 
     /// Get the bounding box of an element.

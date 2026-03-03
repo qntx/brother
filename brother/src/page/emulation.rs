@@ -10,9 +10,42 @@ use super::Page;
 impl Page {
     /// Set the viewport size via CDP `Emulation.setDeviceMetricsOverride`.
     pub async fn set_viewport(&self, width: u32, height: u32) -> Result<()> {
+        self.set_viewport_scaled(width, height, 1.0).await
+    }
+
+    /// Set viewport size with a custom device scale factor (for HiDPI/Retina).
+    pub async fn set_viewport_scaled(
+        &self,
+        width: u32,
+        height: u32,
+        device_scale_factor: f64,
+    ) -> Result<()> {
         use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
-        let params =
-            SetDeviceMetricsOverrideParams::new(i64::from(width), i64::from(height), 1.0, false);
+        let params = SetDeviceMetricsOverrideParams::new(
+            i64::from(width),
+            i64::from(height),
+            device_scale_factor,
+            false,
+        );
+        self.inner.execute(params).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Set only the device scale factor (re-applies current viewport dimensions).
+    pub async fn set_device_scale_factor(&self, scale: f64) -> Result<()> {
+        use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
+        let js = "JSON.stringify({w: window.innerWidth, h: window.innerHeight})";
+        let val = self.eval(js).await?;
+        let (w, h) = val
+            .as_str()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+            .map_or((1280, 720), |v| {
+                (
+                    v["w"].as_i64().unwrap_or(1280),
+                    v["h"].as_i64().unwrap_or(720),
+                )
+            });
+        let params = SetDeviceMetricsOverrideParams::new(w, h, scale, false);
         self.inner.execute(params).await.map_err(Error::Cdp)?;
         Ok(())
     }

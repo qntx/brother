@@ -283,6 +283,11 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
             page_ok!(state, wheel(delta_x, delta_y, selector.as_deref()))
         }
         Request::Tap { target } => page_ok!(state, &target, tap(&target)),
+        Request::Swipe {
+            target,
+            direction,
+            distance,
+        } => page_ok!(state, &target, swipe(&target, direction, distance)),
         Request::GetText { target } => page_text!(state, get_text(target.as_deref())),
         Request::GetInnerText { target } => page_text!(state, &target, get_inner_text(&target)),
         Request::GetContent => page_text!(state, content()),

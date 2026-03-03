@@ -16,6 +16,7 @@ fn sessions_dir() -> Option<std::path::PathBuf> {
 
 /// Validate a state name: only `[a-zA-Z0-9_-]` allowed.
 /// Prevents path traversal attacks (e.g. `"../../etc/passwd"`).
+#[allow(clippy::result_large_err)]
 fn validate_state_name(name: &str) -> Result<(), Response> {
     if name == "*" {
         return Ok(()); // wildcard is allowed for clear-all

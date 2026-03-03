@@ -243,6 +243,16 @@ pub enum Command {
         /// Ref or CSS selector.
         target: String,
     },
+    /// Perform a touch swipe gesture on an element.
+    Swipe {
+        /// Ref or CSS selector.
+        target: String,
+        /// Direction: `up`, `down`, `left`, `right`.
+        direction: String,
+        /// Distance in pixels (default 300).
+        #[arg(short, long, default_value = "300")]
+        distance: i64,
+    },
     /// Select all text in an element.
     SelectAll {
         /// Ref or CSS selector.

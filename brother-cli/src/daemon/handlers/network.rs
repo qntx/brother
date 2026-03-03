@@ -25,47 +25,31 @@ pub(in crate::daemon) async fn cmd_route(
 
     state.lock().await.routes.push(pattern.clone());
 
-    let js = if matches!(action, RouteAction::Abort) {
-        format!(
-            r"(() => {{
-                if (!window.__brother_routes) window.__brother_routes = [];
-                window.__brother_routes.push({{ pattern: '{pat}', action: 'abort' }});
-                if (!window.__brother_fetch_patched) {{
-                    window.__brother_fetch_patched = true;
-                    const F = window.fetch;
-                    window.fetch = function(url, opts) {{
-                        const u = typeof url === 'string' ? url : url.url || '';
-                        const r = (window.__brother_routes || []).find(r => u.includes(r.pattern));
-                        if (r && r.action === 'abort') return Promise.reject(new TypeError('Network request aborted by brother route'));
-                        if (r && r.action === 'fulfill') return Promise.resolve(new Response(r.body, {{ status: r.status, headers: {{ 'Content-Type': r.contentType }} }}));
-                        return F.apply(this, arguments);
-                    }};
-                }}
-            }})()",
-            pat = pattern.replace('\'', "\\'")
-        )
+    let pat = pattern.replace('\'', "\\'");
+    let route_obj = if matches!(action, RouteAction::Abort) {
+        format!("{{ pattern: '{pat}', action: 'abort' }}")
     } else {
-        format!(
-            r"(() => {{
-                if (!window.__brother_routes) window.__brother_routes = [];
-                window.__brother_routes.push({{ pattern: '{pat}', action: 'fulfill', status: {status}, body: '{body_esc}', contentType: '{ct}' }});
-                if (!window.__brother_fetch_patched) {{
-                    window.__brother_fetch_patched = true;
-                    const F = window.fetch;
-                    window.fetch = function(url, opts) {{
-                        const u = typeof url === 'string' ? url : url.url || '';
-                        const r = (window.__brother_routes || []).find(r => u.includes(r.pattern));
-                        if (r && r.action === 'abort') return Promise.reject(new TypeError('Network request aborted by brother route'));
-                        if (r && r.action === 'fulfill') return Promise.resolve(new Response(r.body, {{ status: r.status, headers: {{ 'Content-Type': r.contentType }} }}));
-                        return F.apply(this, arguments);
-                    }};
-                }}
-            }})()",
-            pat = pattern.replace('\'', "\\'"),
-            body_esc = body.replace('\'', "\\'").replace('\n', "\\n"),
-            ct = content_type.replace('\'', "\\'"),
-        )
+        let body_esc = body.replace('\'', "\\'").replace('\n', "\\n");
+        let ct = content_type.replace('\'', "\\'");
+        format!("{{ pattern: '{pat}', action: 'fulfill', status: {status}, body: '{body_esc}', contentType: '{ct}' }}")
     };
+    let js = format!(
+        r"(() => {{
+            if (!window.__brother_routes) window.__brother_routes = [];
+            window.__brother_routes.push({route_obj});
+            if (!window.__brother_fetch_patched) {{
+                window.__brother_fetch_patched = true;
+                const F = window.fetch;
+                window.fetch = function(url, opts) {{
+                    const u = typeof url === 'string' ? url : url.url || '';
+                    const r = (window.__brother_routes || []).find(r => u.includes(r.pattern));
+                    if (r && r.action === 'abort') return Promise.reject(new TypeError('Network request aborted by brother route'));
+                    if (r && r.action === 'fulfill') return Promise.resolve(new Response(r.body, {{ status: r.status, headers: {{ 'Content-Type': r.contentType }} }}));
+                    return F.apply(this, arguments);
+                }};
+            }}
+        }})()",
+    );
 
     if let Err(e) = page.eval(&js).await {
         return Response::error(format!("failed to inject route: {e}"));
@@ -259,60 +243,79 @@ pub(in crate::daemon) async fn cmd_downloads(
     })
 }
 
+/// Snapshot existing filenames in a directory.
+async fn snapshot_dir(dir: &str) -> std::collections::HashSet<String> {
+    let Ok(mut rd) = tokio::fs::read_dir(dir).await else {
+        return std::collections::HashSet::new();
+    };
+    let mut set = std::collections::HashSet::new();
+    while let Ok(Some(entry)) = rd.next_entry().await {
+        set.insert(entry.file_name().to_string_lossy().to_string());
+    }
+    set
+}
+
+/// Poll a directory for a new completed file (not `.crdownload`/`.tmp`).
+/// On success, optionally copies to `save_path` and returns the filename.
+async fn poll_for_new_file(
+    dl_dir: &str,
+    before: &std::collections::HashSet<String>,
+    save_path: Option<&str>,
+    timeout_ms: u64,
+) -> Result<String, String> {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        if tokio::time::Instant::now() > deadline {
+            return Err("download timed out".into());
+        }
+        let Ok(mut dir) = tokio::fs::read_dir(dl_dir).await else {
+            continue;
+        };
+        while let Ok(Some(entry)) = dir.next_entry().await {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let is_partial = std::path::Path::new(&name)
+                .extension()
+                .is_some_and(|e| e == "crdownload" || e == "tmp");
+            if is_partial || before.contains(&name) {
+                continue;
+            }
+            if let Some(dest) = save_path {
+                let src = std::path::Path::new(dl_dir).join(&name);
+                tokio::fs::copy(&src, dest)
+                    .await
+                    .map_err(|e| format!("copy download failed: {e}"))?;
+            }
+            return Ok(name);
+        }
+    }
+}
+
+/// Get the download directory from state, or return an error response.
+async fn require_download_dir(state: &Arc<Mutex<DaemonState>>) -> Result<String, Response> {
+    let guard = state.lock().await;
+    guard
+        .download_path
+        .clone()
+        .ok_or_else(|| Response::error("no download path configured. Use 'set-download-path <dir>' first."))
+}
+
 /// Wait for a download to complete by polling the download directory for new files.
 pub(in crate::daemon) async fn cmd_wait_for_download(
     state: &Arc<Mutex<DaemonState>>,
     save_path: Option<&str>,
     timeout_ms: u64,
 ) -> Response {
-    let guard = state.lock().await;
-    let Some(ref dl_path) = guard.download_path else {
-        return Response::error(
-            "no download path configured. Use 'set-download-path <dir>' first.",
-        );
+    let dl_dir = match require_download_dir(state).await {
+        Ok(d) => d,
+        Err(r) => return r,
     };
-    let dl_dir = dl_path.clone();
-    drop(guard);
-
-    let before: std::collections::HashSet<String> = match tokio::fs::read_dir(&dl_dir).await {
-        Ok(mut dir) => {
-            let mut set = std::collections::HashSet::new();
-            while let Ok(Some(entry)) = dir.next_entry().await {
-                set.insert(entry.file_name().to_string_lossy().to_string());
-            }
-            set
-        }
-        Err(e) => return Response::error(format!("read download dir: {e}")),
-    };
-
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
-    loop {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        if tokio::time::Instant::now() > deadline {
-            return Response::error("wait for download timed out");
-        }
-        if let Ok(mut dir) = tokio::fs::read_dir(&dl_dir).await {
-            while let Ok(Some(entry)) = dir.next_entry().await {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if std::path::Path::new(&name)
-                    .extension()
-                    .is_some_and(|e| e == "crdownload" || e == "tmp")
-                {
-                    continue;
-                }
-                if !before.contains(&name) {
-                    let src = std::path::Path::new(&dl_dir).join(&name);
-                    if let Some(dest) = save_path
-                        && let Err(e) = tokio::fs::copy(&src, dest).await
-                    {
-                        return Response::error(format!("copy download failed: {e}"));
-                    }
-                    return Response::ok_data(ResponseData::Text {
-                        text: format!("downloaded: {name}"),
-                    });
-                }
-            }
-        }
+    let before = snapshot_dir(&dl_dir).await;
+    match poll_for_new_file(&dl_dir, &before, save_path, timeout_ms).await {
+        Ok(name) => Response::ok_data(ResponseData::Text {
+            text: format!("downloaded: {name}"),
+        }),
+        Err(msg) => Response::error(msg),
     }
 }
 
@@ -325,7 +328,6 @@ pub(in crate::daemon) async fn cmd_download(
     save_path: Option<&str>,
     timeout_ms: u64,
 ) -> Response {
-    // Ensure a download directory is configured.
     {
         let guard = state.lock().await;
         if guard.download_path.is_none() {
@@ -339,20 +341,9 @@ pub(in crate::daemon) async fn cmd_download(
         }
     }
 
-    // Snapshot existing files before click.
     let dl_dir = state.lock().await.download_path.clone().unwrap_or_default();
-    let before: std::collections::HashSet<String> = match tokio::fs::read_dir(&dl_dir).await {
-        Ok(mut dir) => {
-            let mut set = std::collections::HashSet::new();
-            while let Ok(Some(entry)) = dir.next_entry().await {
-                set.insert(entry.file_name().to_string_lossy().to_string());
-            }
-            set
-        }
-        Err(_) => std::collections::HashSet::new(),
-    };
+    let before = snapshot_dir(&dl_dir).await;
 
-    // Click the element.
     let page = match get_page(state).await {
         Ok(p) => p,
         Err(r) => return r,
@@ -361,36 +352,14 @@ pub(in crate::daemon) async fn cmd_download(
         return Response::error(e.ai_friendly(target).to_string());
     }
 
-    // Wait for a new file to appear.
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
-    loop {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        if tokio::time::Instant::now() > deadline {
-            return Response::error("download timed out");
+    match poll_for_new_file(&dl_dir, &before, save_path, timeout_ms).await {
+        Ok(name) => {
+            let display = save_path.unwrap_or(&name);
+            Response::ok_data(ResponseData::Text {
+                text: format!("downloaded: {display}"),
+            })
         }
-        if let Ok(mut dir) = tokio::fs::read_dir(&dl_dir).await {
-            while let Ok(Some(entry)) = dir.next_entry().await {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if std::path::Path::new(&name)
-                    .extension()
-                    .is_some_and(|e| e == "crdownload" || e == "tmp")
-                {
-                    continue;
-                }
-                if !before.contains(&name) {
-                    let src = std::path::Path::new(&dl_dir).join(&name);
-                    if let Some(dest) = save_path
-                        && let Err(e) = tokio::fs::copy(&src, dest).await
-                    {
-                        return Response::error(format!("copy download failed: {e}"));
-                    }
-                    let final_path = save_path.unwrap_or(&name);
-                    return Response::ok_data(ResponseData::Text {
-                        text: format!("downloaded: {final_path}"),
-                    });
-                }
-            }
-        }
+        Err(msg) => Response::error(msg),
     }
 }
 

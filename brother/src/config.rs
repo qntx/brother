@@ -182,7 +182,7 @@ impl BrowserConfig {
     }
 }
 
-/// A named device preset with viewport dimensions and user-agent string.
+/// A named device preset with viewport dimensions, user-agent, and scale factor.
 #[derive(Debug, Clone, Copy)]
 pub struct DevicePreset {
     /// Device name.
@@ -193,6 +193,8 @@ pub struct DevicePreset {
     pub height: u32,
     /// User-agent string.
     pub user_agent: &'static str,
+    /// Device pixel ratio (1.0 for standard, 2.0–3.0 for HiDPI/Retina).
+    pub device_scale_factor: f64,
 }
 
 /// All available device presets.
@@ -202,54 +204,63 @@ pub const DEVICE_PRESETS: &[DevicePreset] = &[
         width: 390,
         height: 844,
         user_agent: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+        device_scale_factor: 3.0,
     },
     DevicePreset {
         name: "iphone-14-pro-max",
         width: 430,
         height: 932,
         user_agent: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+        device_scale_factor: 3.0,
     },
     DevicePreset {
         name: "pixel-7",
         width: 412,
         height: 915,
         user_agent: "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
+        device_scale_factor: 2.625,
     },
     DevicePreset {
         name: "ipad-pro",
         width: 1024,
         height: 1366,
         user_agent: "Mozilla/5.0 (iPad; CPU OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Safari/604.1",
+        device_scale_factor: 2.0,
     },
     DevicePreset {
         name: "ipad-mini",
         width: 768,
         height: 1024,
         user_agent: "Mozilla/5.0 (iPad; CPU OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Safari/604.1",
+        device_scale_factor: 2.0,
     },
     DevicePreset {
         name: "galaxy-s23",
         width: 360,
         height: 780,
         user_agent: "Mozilla/5.0 (Linux; Android 13; SM-S911B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
+        device_scale_factor: 3.0,
     },
     DevicePreset {
         name: "desktop-hd",
         width: 1920,
         height: 1080,
         user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        device_scale_factor: 1.0,
     },
     DevicePreset {
         name: "desktop",
         width: 1280,
         height: 720,
         user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        device_scale_factor: 1.0,
     },
     DevicePreset {
         name: "laptop",
         width: 1366,
         height: 768,
         user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        device_scale_factor: 2.0,
     },
 ];
 

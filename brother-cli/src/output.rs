@@ -55,6 +55,7 @@ fn response_to_json(data: Option<&ResponseData>) -> serde_json::Value {
 }
 
 /// Print plain-text output for a response.
+#[allow(clippy::cognitive_complexity)]
 fn print_plain(data: Option<&ResponseData>, screenshot: Option<&ScreenshotOutput>) {
     match data {
         Some(ResponseData::Navigate { url, title }) => {
@@ -218,7 +219,7 @@ fn print_plain(data: Option<&ResponseData>, screenshot: Option<&ScreenshotOutput
             last_login_at,
             updated,
         }) => {
-            if let Some(true) = updated {
+            if matches!(updated, Some(true)) {
                 println!("updated: {name}");
             } else if updated.is_some() {
                 println!("created: {name}");

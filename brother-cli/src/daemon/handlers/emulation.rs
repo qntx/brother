@@ -18,6 +18,7 @@ pub(in crate::daemon) fn cmd_device_list() -> Response {
                     "name": p.name,
                     "width": p.width,
                     "height": p.height,
+                    "device_scale_factor": p.device_scale_factor,
                     "user_agent": p.user_agent,
                 })
             })
@@ -37,7 +38,10 @@ pub(in crate::daemon) async fn cmd_device(state: &Arc<Mutex<DaemonState>>, name:
         Ok(p) => p,
         Err(r) => return r,
     };
-    if let Err(e) = page.set_viewport(preset.width, preset.height).await {
+    if let Err(e) = page
+        .set_viewport_scaled(preset.width, preset.height, preset.device_scale_factor)
+        .await
+    {
         return Response::error(e.to_string());
     }
     if let Err(e) = page.set_user_agent(preset.user_agent).await {
@@ -45,8 +49,8 @@ pub(in crate::daemon) async fn cmd_device(state: &Arc<Mutex<DaemonState>>, name:
     }
     Response::ok_data(ResponseData::Text {
         text: format!(
-            "emulating {} ({}x{}, {})",
-            preset.name, preset.width, preset.height, preset.user_agent
+            "emulating {} ({}x{} @{:.1}x, {})",
+            preset.name, preset.width, preset.height, preset.device_scale_factor, preset.user_agent
         ),
     })
 }

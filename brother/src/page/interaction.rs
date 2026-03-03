@@ -474,6 +474,58 @@ impl Page {
         Ok(())
     }
 
+    /// Perform a swipe gesture on an element.
+    ///
+    /// Resolves the element center, then dispatches a touch event sequence:
+    /// `touchStart` at center → several `touchMove` steps → `touchEnd` at final position.
+    pub async fn swipe(
+        &self,
+        target: &str,
+        direction: ScrollDirection,
+        distance: i64,
+    ) -> Result<()> {
+        use chromiumoxide::cdp::browser_protocol::input::{
+            DispatchTouchEventParams, DispatchTouchEventType, TouchPoint,
+        };
+
+        let center = self.resolve_target_center(target).await?;
+        let (cx, cy) = (center.x, center.y);
+        let (dx, dy): (f64, f64) = match direction {
+            ScrollDirection::Up => (0.0, -(distance as f64)),
+            ScrollDirection::Down => (0.0, distance as f64),
+            ScrollDirection::Left => (-(distance as f64), 0.0),
+            ScrollDirection::Right => (distance as f64, 0.0),
+        };
+
+        let steps = 10u32;
+        let step_delay = Duration::from_millis(16);
+
+        let start = DispatchTouchEventParams::new(
+            DispatchTouchEventType::TouchStart,
+            vec![TouchPoint::new(cx, cy)],
+        );
+        self.inner.execute(start).await.map_err(Error::Cdp)?;
+
+        for i in 1..=steps {
+            let frac = f64::from(i) / f64::from(steps);
+            let px = dx.mul_add(frac, cx);
+            let py = dy.mul_add(frac, cy);
+            let mv = DispatchTouchEventParams::new(
+                DispatchTouchEventType::TouchMove,
+                vec![TouchPoint::new(px, py)],
+            );
+            self.inner.execute(mv).await.map_err(Error::Cdp)?;
+            tokio::time::sleep(step_delay).await;
+        }
+
+        let end = DispatchTouchEventParams::new(
+            DispatchTouchEventType::TouchEnd,
+            vec![],
+        );
+        self.inner.execute(end).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
     /// Read text from the clipboard (grants permission first).
     pub async fn clipboard_read(&self) -> Result<String> {
         self.grant_clipboard_permission().await?;

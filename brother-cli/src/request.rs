@@ -189,6 +189,15 @@ pub fn build_request(cmd: Command) -> Request {
             selector,
         },
         Command::Tap { target } => Request::Tap { target },
+        Command::Swipe {
+            target,
+            direction,
+            distance,
+        } => Request::Swipe {
+            target,
+            direction: parse_direction(&direction),
+            distance,
+        },
         Command::SetValue { target, value } => Request::SetValue { target, value },
         Command::AddInitScript { script } => Request::AddInitScript { script },
         Command::AddScript { content, url } => Request::AddScript { content, url },
