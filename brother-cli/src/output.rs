@@ -196,7 +196,7 @@ fn print_plain(data: Option<&ResponseData>, screenshot: Option<&ScreenshotOutput
             if let Some(arr) = annotations.as_array() {
                 println!("annotations: {} elements", arr.len());
                 for a in arr {
-                    let num = a.get("number").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let num = a.get("number").and_then(serde_json::Value::as_u64).unwrap_or(0);
                     let role = a.get("role").and_then(|v| v.as_str()).unwrap_or("");
                     let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
                     print!("  @e{num} [{role}]");

@@ -1,4 +1,4 @@
-//! Navigation handlers: navigate, connect, frame, main_frame.
+//! Navigation handlers: navigate, connect, frame, `main_frame`.
 
 use std::sync::Arc;
 

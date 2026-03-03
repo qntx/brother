@@ -1,6 +1,5 @@
 //! Shared types used by the request/response protocol.
 
-use brother::MouseButton;
 use serde::{Deserialize, Serialize};
 
 /// Action for network route interception.
@@ -79,67 +78,59 @@ pub enum WaitCondition {
 }
 
 /// Default timeout: 30 s.
-pub(crate) const fn default_timeout_ms() -> u64 {
+pub const fn default_timeout_ms() -> u64 {
     30_000
 }
 
-pub(crate) const fn default_viewport_width() -> u32 {
+pub const fn default_viewport_width() -> u32 {
     1280
 }
 
-pub(crate) const fn default_viewport_height() -> u32 {
+pub const fn default_viewport_height() -> u32 {
     720
 }
 
-pub(crate) const fn default_diff_threshold() -> u8 {
+pub const fn default_diff_threshold() -> u8 {
     10
 }
 
-pub(crate) const fn default_scroll_px() -> i64 {
+pub const fn default_scroll_px() -> i64 {
     500
 }
 
-pub(crate) const fn default_status() -> u16 {
+pub const fn default_status() -> u16 {
     200
 }
 
-pub(crate) fn default_content_type() -> String {
+pub fn default_content_type() -> String {
     "text/plain".into()
 }
 
-pub(crate) const fn default_geo_accuracy() -> f64 {
+pub const fn default_geo_accuracy() -> f64 {
     1.0
 }
 
-pub(crate) const fn default_true() -> bool {
+pub const fn default_true() -> bool {
     true
 }
 
-pub(crate) const fn default_click_count() -> u32 {
+pub const fn default_click_count() -> u32 {
     1
 }
 
-pub(crate) fn default_screenshot_format() -> String {
+pub fn default_screenshot_format() -> String {
     "png".into()
 }
 
-pub(crate) const fn default_jpeg_quality() -> u8 {
+pub const fn default_jpeg_quality() -> u8 {
     80
 }
 
-pub(crate) fn default_screencast_format() -> String {
+pub fn default_screencast_format() -> String {
     "jpeg".into()
 }
 
-pub(crate) const fn default_screencast_quality() -> u32 {
+pub const fn default_screencast_quality() -> u32 {
     80
 }
 
-/// Parse a mouse button string into the protocol type.
-pub fn parse_mouse_button(s: &str) -> MouseButton {
-    match s.to_ascii_lowercase().as_str() {
-        "right" => MouseButton::Right,
-        "middle" => MouseButton::Middle,
-        _ => MouseButton::Left,
-    }
-}

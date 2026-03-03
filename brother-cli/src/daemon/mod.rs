@@ -8,8 +8,8 @@
 mod dispatch;
 mod handlers;
 #[macro_use]
-pub(crate) mod macros;
+pub mod macros;
 mod server;
-pub(crate) mod state;
+pub mod state;
 
 pub use server::run_session;

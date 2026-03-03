@@ -133,8 +133,7 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
         Request::Pdf { path, paper_format } => {
             let (pw, ph) = paper_format
                 .as_deref()
-                .map(paper_dimensions)
-                .unwrap_or((None, None));
+                .map_or((None, None), paper_dimensions);
             page_ok!(state, pdf_with(&path, pw, ph))
         }
         Request::Route {
@@ -427,8 +426,8 @@ async fn cmd_confirm(state: &Arc<Mutex<DaemonState>>, confirmation_id: &str) -> 
     dispatch_no_policy(original_req, state).await
 }
 
-async fn cmd_deny(_state: &Arc<Mutex<DaemonState>>, confirmation_id: &str) -> Response {
-    let mut guard = _state.lock().await;
+async fn cmd_deny(state: &Arc<Mutex<DaemonState>>, confirmation_id: &str) -> Response {
+    let mut guard = state.lock().await;
     let _ = guard.confirmations.take(confirmation_id);
     Response::ok()
 }

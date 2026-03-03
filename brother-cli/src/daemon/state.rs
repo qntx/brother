@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 use crate::protocol::Response;
 
 /// Shared state across connections.
-pub(crate) struct DaemonState {
+pub struct DaemonState {
     /// Session name for port/pid file management.
     pub session: String,
     pub browser: Option<Browser>,
@@ -42,7 +42,7 @@ pub(crate) struct DaemonState {
     pub har_entries: Option<Vec<serde_json::Value>>,
 }
 
-pub(crate) async fn ensure_browser(state: &Arc<Mutex<DaemonState>>) -> Result<(), Response> {
+pub async fn ensure_browser(state: &Arc<Mutex<DaemonState>>) -> Result<(), Response> {
     let mut guard = state.lock().await;
     if guard.browser.is_none() {
         let config = guard.launch_config.take().unwrap_or_default();
@@ -66,7 +66,7 @@ async fn launch_browser(config: BrowserConfig) -> brother::Result<(Browser, Page
 }
 
 /// Get the active page (tab).
-pub(crate) async fn get_page(state: &Arc<Mutex<DaemonState>>) -> Result<Page, Response> {
+pub async fn get_page(state: &Arc<Mutex<DaemonState>>) -> Result<Page, Response> {
     ensure_browser(state).await?;
     let guard = state.lock().await;
     guard

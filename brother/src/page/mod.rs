@@ -5,6 +5,7 @@
 //! - A CSS selector: `"#submit"`, `".btn-primary"`
 
 mod cookie_storage;
+mod dom;
 mod emulation;
 mod find;
 mod interaction;

@@ -1,4 +1,4 @@
-//! Network handlers: route, unroute, requests, downloads, response_body.
+//! Network handlers: route, unroute, requests, downloads, `response_body`.
 
 use std::sync::Arc;
 use std::time::Duration;

@@ -1,4 +1,4 @@
-//! Emulation handlers: device, device_list, screencast.
+//! Emulation handlers: device, `device_list`, screencast.
 
 use std::sync::Arc;
 

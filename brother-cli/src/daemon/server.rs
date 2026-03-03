@@ -182,7 +182,7 @@ async fn write_pid_file(session: &str) -> brother::Result<()> {
     Ok(())
 }
 
-pub(crate) async fn cleanup_files(session: &str) {
+pub async fn cleanup_files(session: &str) {
     if let Some(p) = crate::protocol::port_file_path_for(session) {
         let _ = tokio::fs::remove_file(&p).await;
     }

@@ -1,4 +1,4 @@
-//! Observation handlers: snapshot, wait, screenshot, bounding_box, dialog, console, errors, status.
+//! Observation handlers: snapshot, wait, screenshot, `bounding_box`, dialog, console, errors, status.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -126,21 +126,21 @@ pub(in crate::daemon) async fn cmd_screenshot(
             .strip_prefix('e')
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        if let Ok((x, y, w, h)) = page.bounding_box(&format!("@{ref_id}")).await {
-            if w > 0.0 && h > 0.0 {
-                annotations.push(serde_json::json!({
-                    "ref": ref_id,
-                    "number": num,
-                    "role": info.role,
-                    "name": info.name,
-                    "box": {
-                        "x": x.round(),
-                        "y": y.round(),
-                        "width": w.round(),
-                        "height": h.round(),
-                    }
-                }));
-            }
+        if let Ok((x, y, w, h)) = page.bounding_box(&format!("@{ref_id}")).await
+            && w > 0.0 && h > 0.0
+        {
+            annotations.push(serde_json::json!({
+                "ref": ref_id,
+                "number": num,
+                "role": info.role,
+                "name": info.name,
+                "box": {
+                    "x": x.round(),
+                    "y": y.round(),
+                    "width": w.round(),
+                    "height": h.round(),
+                }
+            }));
         }
     }
 
@@ -161,7 +161,7 @@ pub(in crate::daemon) async fn cmd_screenshot(
             .collect();
 
         let inject_js = format!(
-            r#"(() => {{
+            r"(() => {{
 var items = {items};
 var id = '__brother_annotations__';
 var sx = window.scrollX || 0;
@@ -183,7 +183,7 @@ for (var i = 0; i < items.length; i++) {{
   c.appendChild(b);
 }}
 document.documentElement.appendChild(c);
-}})()"#,
+}})()",
             items = serde_json::to_string(&overlay_data).unwrap_or_default()
         );
 

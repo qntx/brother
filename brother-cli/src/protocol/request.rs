@@ -3,7 +3,12 @@
 use brother::{MouseButton, ScrollDirection, SnapshotOptions};
 use serde::{Deserialize, Serialize};
 
-use super::types::*;
+use super::types::{
+    RouteAction, WaitCondition, WaitStrategy, default_click_count, default_content_type,
+    default_diff_threshold, default_geo_accuracy, default_jpeg_quality, default_screencast_format,
+    default_screencast_quality, default_screenshot_format, default_scroll_px, default_status,
+    default_timeout_ms, default_true, default_viewport_height, default_viewport_width,
+};
 
 /// A command sent from the CLI to the daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
