@@ -5,10 +5,10 @@
 //! [`Response`](crate::protocol::Response) messages. The browser is lazily
 //! launched on first command.
 
+pub mod auth_vault;
 mod dispatch;
 mod domain_filter;
 mod handlers;
-pub mod auth_vault;
 pub mod policy;
 
 use std::sync::Arc;
@@ -92,16 +92,14 @@ pub async fn run_session(
         last_activity: tokio::time::Instant::now(),
         allowed_domains: Vec::new(),
         pending_color_scheme: None,
-        policy_cache: policy_file.and_then(|path| {
-            match policy::load_policy_file(path) {
-                Ok(p) => {
-                    tracing::info!(path, "loaded action policy");
-                    Some(policy::PolicyCache::new(path.to_owned(), p))
-                }
-                Err(e) => {
-                    tracing::warn!(path, %e, "failed to load policy file");
-                    None
-                }
+        policy_cache: policy_file.and_then(|path| match policy::load_policy_file(path) {
+            Ok(p) => {
+                tracing::info!(path, "loaded action policy");
+                Some(policy::PolicyCache::new(path.to_owned(), p))
+            }
+            Err(e) => {
+                tracing::warn!(path, %e, "failed to load policy file");
+                None
             }
         }),
         har_entries: None,

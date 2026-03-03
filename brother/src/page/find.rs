@@ -380,9 +380,9 @@ impl Page {
                     }})();"
                 )
             }
-            "testid" => format!(
-                r#"const el = document.querySelector('[data-testid="{escaped_val}"]');"#
-            ),
+            "testid" => {
+                format!(r#"const el = document.querySelector('[data-testid="{escaped_val}"]');"#)
+            }
             "alttext" | "alt" => {
                 let lower = escaped_val.to_lowercase();
                 let cond = if exact {

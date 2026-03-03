@@ -111,8 +111,8 @@ const ACTION_CATEGORIES: &[(&str, &str)] = &[
 
 /// Known user-facing categories (excludes internal).
 pub const KNOWN_CATEGORIES: &[&str] = &[
-    "navigate", "click", "fill", "download", "upload", "eval", "snapshot",
-    "scroll", "wait", "get", "network", "state", "interact",
+    "navigate", "click", "fill", "download", "upload", "eval", "snapshot", "scroll", "wait", "get",
+    "network", "state", "interact",
 ];
 
 /// A loaded action policy.
@@ -274,7 +274,10 @@ mod tests {
         };
         assert_eq!(check_policy("navigate", &policy), PolicyDecision::Allow);
         assert_eq!(check_policy("eval", &policy), PolicyDecision::Deny);
-        assert_eq!(check_policy("add_init_script", &policy), PolicyDecision::Deny);
+        assert_eq!(
+            check_policy("add_init_script", &policy),
+            PolicyDecision::Deny
+        );
     }
 
     #[test]

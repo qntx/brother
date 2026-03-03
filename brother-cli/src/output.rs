@@ -11,11 +11,7 @@ pub struct ScreenshotOutput {
 }
 
 /// Print a daemon response as JSON or plain text.
-pub fn print_response(
-    response: Response,
-    json_mode: bool,
-    screenshot: Option<&ScreenshotOutput>,
-) {
+pub fn print_response(response: Response, json_mode: bool, screenshot: Option<&ScreenshotOutput>) {
     match response {
         Response::Ok { data } => {
             if json_mode {

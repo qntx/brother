@@ -152,9 +152,7 @@ pub fn build_request(cmd: Command) -> Request {
             longitude,
             accuracy,
         },
-        Command::Credentials { username, password } => {
-            Request::Credentials { username, password }
-        }
+        Command::Credentials { username, password } => Request::Credentials { username, password },
         Command::UserAgent { user_agent } => Request::UserAgent { user_agent },
         Command::Timezone { timezone_id } => Request::Timezone { timezone_id },
         Command::Locale { locale } => Request::Locale { locale },
@@ -248,9 +246,15 @@ pub fn build_request(cmd: Command) -> Request {
         },
         Command::Storage(sub) => match sub {
             StorageSub::Get { key, session } => Request::GetStorage { key, session },
-            StorageSub::Set { key, value, session } => {
-                Request::SetStorage { key, value, session }
-            }
+            StorageSub::Set {
+                key,
+                value,
+                session,
+            } => Request::SetStorage {
+                key,
+                value,
+                session,
+            },
             StorageSub::Clear { session } => Request::ClearStorage { session },
         },
         Command::Query { what, target } => build_query_request(&what, target),
@@ -297,10 +301,7 @@ pub fn build_request(cmd: Command) -> Request {
             } => {
                 let baseline_b64 = std::fs::read(&baseline)
                     .map(|bytes| {
-                        base64::Engine::encode(
-                            &base64::engine::general_purpose::STANDARD,
-                            &bytes,
-                        )
+                        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes)
                     })
                     .unwrap_or_default();
                 Request::DiffScreenshot {
@@ -342,9 +343,7 @@ pub fn build_request(cmd: Command) -> Request {
             StateSub::Clear { name } => Request::StateClear { name },
             StateSub::Show { name } => Request::StateShow { name },
             StateSub::Clean { days } => Request::StateClean { days },
-            StateSub::Rename { old_name, new_name } => {
-                Request::StateRename { old_name, new_name }
-            }
+            StateSub::Rename { old_name, new_name } => Request::StateRename { old_name, new_name },
         },
         Command::Trace(sub) => match sub {
             TraceSub::Start { categories } => Request::TraceStart {

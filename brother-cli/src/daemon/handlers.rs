@@ -15,20 +15,20 @@ pub(super) use state::{
     cmd_state_save, cmd_state_show,
 };
 pub(super) use trace::{
-    cmd_profiler_start, cmd_profiler_stop, cmd_set_allowed_domains, cmd_trace_start,
-    cmd_trace_stop,
+    cmd_profiler_start, cmd_profiler_stop, cmd_set_allowed_domains, cmd_trace_start, cmd_trace_stop,
 };
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use brother::{Browser, Error};
+use base64::Engine;
+use brother::{Browser, Error, MouseButton};
 use futures::StreamExt;
 use tokio::sync::Mutex;
 
 use crate::protocol::{Response, ResponseData, RouteAction, WaitCondition, WaitStrategy};
 
-use super::{ensure_browser, get_page, DaemonState};
+use super::{DaemonState, ensure_browser, get_page};
 
 pub(super) async fn cmd_navigate(
     state: &Arc<Mutex<DaemonState>>,
@@ -457,10 +457,7 @@ pub(super) async fn cmd_requests(
 }
 
 /// Set download directory via CDP and store path in `DaemonState`.
-pub(super) async fn cmd_set_download_path(
-    state: &Arc<Mutex<DaemonState>>,
-    path: &str,
-) -> Response {
+pub(super) async fn cmd_set_download_path(state: &Arc<Mutex<DaemonState>>, path: &str) -> Response {
     use chromiumoxide::cdp::browser_protocol::browser::{
         SetDownloadBehaviorBehavior, SetDownloadBehaviorParams,
     };
@@ -600,8 +597,7 @@ pub(super) async fn cmd_download(
             drop(guard);
             let tmp = std::env::temp_dir().join("brother-downloads");
             let _ = tokio::fs::create_dir_all(&tmp).await;
-            let resp =
-                cmd_set_download_path(state, tmp.to_string_lossy().as_ref()).await;
+            let resp = cmd_set_download_path(state, tmp.to_string_lossy().as_ref()).await;
             if matches!(resp, Response::Error { .. }) {
                 return resp;
             }
@@ -747,10 +743,7 @@ pub(super) async fn cmd_window_new(
     }
 }
 
-pub(super) async fn cmd_tab_new(
-    state: &Arc<Mutex<DaemonState>>,
-    url: Option<&str>,
-) -> Response {
+pub(super) async fn cmd_tab_new(state: &Arc<Mutex<DaemonState>>, url: Option<&str>) -> Response {
     ensure_browser(state).await.ok();
     let mut guard = state.lock().await;
     let Some(ref browser) = guard.browser else {
@@ -886,10 +879,7 @@ pub(super) async fn cmd_har_start(state: &Arc<Mutex<DaemonState>>) -> Response {
     }
 }
 
-pub(super) async fn cmd_har_stop(
-    state: &Arc<Mutex<DaemonState>>,
-    path: Option<&str>,
-) -> Response {
+pub(super) async fn cmd_har_stop(state: &Arc<Mutex<DaemonState>>, path: Option<&str>) -> Response {
     let page = match get_page(state).await {
         Ok(p) => p,
         Err(r) => return r,
@@ -908,8 +898,7 @@ pub(super) async fn cmd_har_stop(
     };
 
     let entries_str = entries_val.as_str().unwrap_or("[]");
-    let entries: Vec<serde_json::Value> =
-        serde_json::from_str(entries_str).unwrap_or_default();
+    let entries: Vec<serde_json::Value> = serde_json::from_str(entries_str).unwrap_or_default();
 
     // Build HAR 1.2 format
     let har = serde_json::json!({
@@ -937,4 +926,370 @@ pub(super) async fn cmd_har_stop(
     } else {
         Response::ok_data(ResponseData::Eval { value: har })
     }
+}
+
+pub(super) async fn cmd_screenshot(
+    state: &Arc<Mutex<DaemonState>>,
+    full_page: bool,
+    selector: Option<&str>,
+    format: &str,
+    quality: u8,
+) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    match page
+        .screenshot(full_page, selector, format, Some(quality))
+        .await
+    {
+        Ok(bytes) => {
+            let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            Response::ok_data(ResponseData::Screenshot { data })
+        }
+        Err(e) => Response::error(format!("screenshot failed: {e}")),
+    }
+}
+
+pub(super) async fn cmd_click(
+    state: &Arc<Mutex<DaemonState>>,
+    target: &str,
+    button: MouseButton,
+    click_count: u32,
+    delay: u64,
+    new_tab: bool,
+) -> Response {
+    if !new_tab {
+        let page = match get_page(state).await {
+            Ok(p) => p,
+            Err(r) => return r,
+        };
+        return match page.click_with(target, button, click_count, delay).await {
+            Ok(()) => Response::ok(),
+            Err(e) => Response::error(e.ai_friendly(target).to_string()),
+        };
+    }
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    if let Err(e) = page.key_down("Control").await {
+        return Response::error(e.to_string());
+    }
+    let click_result = page.click(target).await;
+    let _ = page.key_up("Control").await;
+    if let Err(e) = click_result {
+        return Response::error(e.ai_friendly(target).to_string());
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let mut guard = state.lock().await;
+    if let Some(ref browser) = guard.browser {
+        if let Ok(pages) = browser.pages().await {
+            for p in pages {
+                let url = p.url().await.unwrap_or_default();
+                if !guard
+                    .pages
+                    .iter()
+                    .any(|ep| futures::executor::block_on(ep.url()).unwrap_or_default() == url)
+                {
+                    guard.pages.push(p);
+                }
+            }
+        }
+        guard.active_tab = guard.pages.len().saturating_sub(1);
+    }
+    Response::ok()
+}
+
+pub(super) async fn cmd_type(
+    state: &Arc<Mutex<DaemonState>>,
+    target: Option<&str>,
+    text: &str,
+    delay_ms: u64,
+    clear: bool,
+) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    if clear && let Some(t) = target {
+        return match page.fill(t, text).await {
+            Ok(()) => Response::ok(),
+            Err(e) => Response::error(e.ai_friendly(t).to_string()),
+        };
+    }
+    match page.type_with_delay(target, text, delay_ms).await {
+        Ok(()) => Response::ok(),
+        Err(e) => Response::error(e.to_string()),
+    }
+}
+
+pub(super) async fn cmd_bounding_box(state: &Arc<Mutex<DaemonState>>, target: &str) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    match page.bounding_box(target).await {
+        Ok((x, y, w, h)) => Response::ok_data(ResponseData::BoundingBox {
+            x,
+            y,
+            width: w,
+            height: h,
+        }),
+        Err(e) => Response::error(e.ai_friendly(target).to_string()),
+    }
+}
+
+pub(super) async fn cmd_find(
+    state: &Arc<Mutex<DaemonState>>,
+    by: &str,
+    value: &str,
+    name: Option<&str>,
+    exact: bool,
+    subaction: Option<&str>,
+    fill_value: Option<&str>,
+) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    if let Some(sub) = subaction {
+        return match page
+            .locator_action(by, value, name, exact, sub, fill_value)
+            .await
+        {
+            Ok(val) => Response::ok_data(ResponseData::Eval { value: val }),
+            Err(e) => Response::error(e.to_string()),
+        };
+    }
+    let result = match by {
+        "role" => page.find_by_role(value, name).await,
+        "text" => page.find_by_text(value, exact).await,
+        "label" => page.find_by_label(value).await,
+        "placeholder" => page.find_by_placeholder(value).await,
+        "testid" => page.find_by_testid(value).await,
+        "alttext" | "alt" => page.find_by_alt_text(value, exact).await,
+        "title" => page.find_by_title(value, exact).await,
+        _ => {
+            return Response::error(format!(
+                "unknown locator type '{by}'. Use: role, text, label, placeholder, testid, alttext, title"
+            ));
+        }
+    };
+    match result {
+        Ok(val) => Response::ok_data(ResponseData::Eval { value: val }),
+        Err(e) => Response::error(e.to_string()),
+    }
+}
+
+pub(super) async fn cmd_nth(
+    state: &Arc<Mutex<DaemonState>>,
+    selector: &str,
+    index: i64,
+    subaction: Option<&str>,
+    fill_value: Option<&str>,
+) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    match page
+        .nth_action(selector, index, subaction, fill_value)
+        .await
+    {
+        Ok(val) => Response::ok_data(ResponseData::Eval { value: val }),
+        Err(e) => Response::error(e.to_string()),
+    }
+}
+
+pub(super) async fn cmd_expose(state: &Arc<Mutex<DaemonState>>, name: &str) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let escaped = name.replace('\\', "\\\\").replace('\'', "\\'");
+    let js = format!(
+        "window['{escaped}'] = (...args) => console.log(JSON.stringify({{ fn: '{escaped}', args }}))"
+    );
+    match page.add_init_script(&js).await {
+        Ok(()) => {
+            let _ = page.eval(&js).await;
+            Response::ok_data(ResponseData::Text {
+                text: format!("function '{name}' exposed on window"),
+            })
+        }
+        Err(e) => Response::error(format!("expose: {e}")),
+    }
+}
+
+pub(super) fn cmd_device_list() -> Response {
+    let names = brother::DevicePreset::list_names();
+    let descriptions: Vec<serde_json::Value> = names
+        .iter()
+        .filter_map(|n| {
+            brother::DevicePreset::lookup(n).map(|p| {
+                serde_json::json!({
+                    "name": p.name,
+                    "width": p.width,
+                    "height": p.height,
+                    "user_agent": p.user_agent,
+                })
+            })
+        })
+        .collect();
+    Response::ok_data(ResponseData::Eval {
+        value: serde_json::Value::Array(descriptions),
+    })
+}
+
+pub(super) async fn cmd_device(state: &Arc<Mutex<DaemonState>>, name: &str) -> Response {
+    let Some(preset) = brother::DevicePreset::lookup(name) else {
+        let names = brother::DevicePreset::list_names().join(", ");
+        return Response::error(format!("unknown device '{name}'. Available: {names}"));
+    };
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    if let Err(e) = page.set_viewport(preset.width, preset.height).await {
+        return Response::error(e.to_string());
+    }
+    if let Err(e) = page.set_user_agent(preset.user_agent).await {
+        return Response::error(e.to_string());
+    }
+    Response::ok_data(ResponseData::Text {
+        text: format!(
+            "emulating {} ({}x{}, {})",
+            preset.name, preset.width, preset.height, preset.user_agent
+        ),
+    })
+}
+
+pub(super) async fn cmd_extra_headers(
+    state: &Arc<Mutex<DaemonState>>,
+    headers_json: &str,
+) -> Response {
+    let map: serde_json::Map<String, serde_json::Value> = match serde_json::from_str(headers_json) {
+        Ok(m) => m,
+        Err(e) => return Response::error(format!("invalid headers JSON: {e}")),
+    };
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    match page.set_extra_headers(map).await {
+        Ok(()) => Response::ok(),
+        Err(e) => Response::error(e.to_string()),
+    }
+}
+
+pub(super) async fn cmd_dialog_message(state: &Arc<Mutex<DaemonState>>) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    page.dialog_message().await.map_or_else(
+        || {
+            Response::ok_data(ResponseData::Text {
+                text: "(no dialog)".into(),
+            })
+        },
+        |info| {
+            let value = serde_json::to_value(&info).unwrap_or_default();
+            Response::ok_data(ResponseData::Eval { value })
+        },
+    )
+}
+
+pub(super) async fn cmd_console(state: &Arc<Mutex<DaemonState>>, clear: bool) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let logs = page.take_console_logs().await;
+    if clear {
+        return Response::ok_data(ResponseData::Text {
+            text: format!("{} console entries cleared", logs.len()),
+        });
+    }
+    Response::ok_data(ResponseData::Logs {
+        entries: serde_json::to_value(&logs).unwrap_or_default(),
+    })
+}
+
+pub(super) async fn cmd_errors(state: &Arc<Mutex<DaemonState>>, clear: bool) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let errors = page.take_js_errors().await;
+    if clear {
+        return Response::ok_data(ResponseData::Text {
+            text: format!("{} error entries cleared", errors.len()),
+        });
+    }
+    Response::ok_data(ResponseData::Logs {
+        entries: serde_json::to_value(&errors).unwrap_or_default(),
+    })
+}
+
+pub(super) async fn cmd_screencast_start(
+    state: &Arc<Mutex<DaemonState>>,
+    format: &str,
+    quality: u32,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
+) -> Response {
+    use chromiumoxide::cdp::browser_protocol::page::{
+        StartScreencastFormat, StartScreencastParams,
+    };
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let fmt = if format == "png" {
+        StartScreencastFormat::Png
+    } else {
+        StartScreencastFormat::Jpeg
+    };
+    let params = StartScreencastParams::builder()
+        .format(fmt)
+        .quality(i64::from(quality))
+        .max_width(i64::from(max_width.unwrap_or(1280)))
+        .max_height(i64::from(max_height.unwrap_or(720)))
+        .build();
+    match page.inner().execute(params).await {
+        Ok(_) => Response::ok_data(ResponseData::Text {
+            text: format!("screencast started ({format}, quality={quality})"),
+        }),
+        Err(e) => Response::error(format!("screencast start failed: {e}")),
+    }
+}
+
+pub(super) async fn cmd_screencast_stop(state: &Arc<Mutex<DaemonState>>) -> Response {
+    use chromiumoxide::cdp::browser_protocol::page::StopScreencastParams;
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    match page.inner().execute(StopScreencastParams::default()).await {
+        Ok(_) => Response::ok_data(ResponseData::Text {
+            text: "screencast stopped".to_owned(),
+        }),
+        Err(e) => Response::error(format!("screencast stop failed: {e}")),
+    }
+}
+
+pub(super) async fn cmd_status(state: &Arc<Mutex<DaemonState>>) -> Response {
+    let guard = state.lock().await;
+    let browser_running = guard.browser.is_some();
+    let page_url = if let Some(page) = guard.pages.get(guard.active_tab) {
+        page.url().await.ok()
+    } else {
+        None
+    };
+    Response::ok_data(ResponseData::Status {
+        browser_running,
+        page_url,
+    })
 }

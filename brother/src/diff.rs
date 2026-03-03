@@ -139,9 +139,7 @@ fn myers_diff<'a>(old: &[&'a str], new: &[&'a str]) -> Vec<Edit<'a>> {
             let k: isize = k_off as isize - d as isize;
             let ki = (k + offset as isize) as usize;
 
-            let mut x = if k == -(d as isize)
-                || (k != d as isize && v[ki - 1] < v[ki + 1])
-            {
+            let mut x = if k == -(d as isize) || (k != d as isize && v[ki - 1] < v[ki + 1]) {
                 v[ki + 1]
             } else {
                 v[ki - 1] + 1

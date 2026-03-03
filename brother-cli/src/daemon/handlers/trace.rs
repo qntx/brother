@@ -7,7 +7,7 @@ use tokio::sync::Mutex;
 
 use crate::protocol::{Response, ResponseData};
 
-use super::super::{get_page, DaemonState};
+use super::super::{DaemonState, get_page};
 
 /// Default tracing categories when none are specified.
 const DEFAULT_TRACE_CATEGORIES: &[&str] = &[
@@ -22,9 +22,7 @@ pub(in crate::daemon) async fn cmd_trace_start(
     state: &Arc<Mutex<DaemonState>>,
     categories: &[String],
 ) -> Response {
-    use chromiumoxide::cdp::browser_protocol::tracing::{
-        StartParams, TraceConfig,
-    };
+    use chromiumoxide::cdp::browser_protocol::tracing::{StartParams, TraceConfig};
 
     let page = match get_page(state).await {
         Ok(p) => p,
@@ -32,7 +30,10 @@ pub(in crate::daemon) async fn cmd_trace_start(
     };
 
     let cats: Vec<String> = if categories.is_empty() {
-        DEFAULT_TRACE_CATEGORIES.iter().map(|&s| s.to_owned()).collect()
+        DEFAULT_TRACE_CATEGORIES
+            .iter()
+            .map(|&s| s.to_owned())
+            .collect()
     } else {
         categories.to_vec()
     };
@@ -41,9 +42,7 @@ pub(in crate::daemon) async fn cmd_trace_start(
         .included_categories(cats.clone())
         .build();
 
-    let params = StartParams::builder()
-        .trace_config(config)
-        .build();
+    let params = StartParams::builder().trace_config(config).build();
 
     match page.inner().execute(params).await {
         Ok(_) => Response::ok_data(ResponseData::Text {
@@ -125,9 +124,7 @@ pub(in crate::daemon) async fn cmd_profiler_start(
     state: &Arc<Mutex<DaemonState>>,
     _categories: &[String],
 ) -> Response {
-    use chromiumoxide::cdp::js_protocol::profiler::{
-        EnableParams, StartParams,
-    };
+    use chromiumoxide::cdp::js_protocol::profiler::{EnableParams, StartParams};
 
     let page = match get_page(state).await {
         Ok(p) => p,

@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 
 use crate::protocol::{Response, ResponseData};
 
-use super::super::{get_page, DaemonState};
+use super::super::{DaemonState, get_page};
 
 /// Compare current snapshot against baseline text.
 pub(in crate::daemon) async fn cmd_diff_snapshot(
@@ -99,13 +99,20 @@ pub(in crate::daemon) async fn cmd_diff_url(
             Err(e) => return Response::error(format!("decode screenshot B: {e}")),
         };
         let img_result = brother::diff_rgba(
-            &rgba_a.pixels, rgba_a.width, rgba_a.height,
-            &rgba_b.pixels, rgba_b.width, rgba_b.height,
+            &rgba_a.pixels,
+            rgba_a.width,
+            rgba_a.height,
+            &rgba_b.pixels,
+            rgba_b.width,
+            rgba_b.height,
             threshold,
         );
 
         if let Ok(diff_path) = generate_diff_image(&rgba_a, &rgba_b, threshold).await {
-            output = format!("{output}\nscreenshot: {} | diff image: {diff_path}", img_result.summary());
+            output = format!(
+                "{output}\nscreenshot: {} | diff image: {diff_path}",
+                img_result.summary()
+            );
         } else {
             output = format!("{output}\nscreenshot: {}", img_result.summary());
         }
@@ -143,13 +150,11 @@ pub(in crate::daemon) async fn cmd_diff_screenshot(
     };
 
     // Decode baseline from base64
-    let baseline_bytes = match base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        baseline_b64,
-    ) {
-        Ok(b) => b,
-        Err(e) => return Response::error(format!("invalid baseline base64: {e}")),
-    };
+    let baseline_bytes =
+        match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, baseline_b64) {
+            Ok(b) => b,
+            Err(e) => return Response::error(format!("invalid baseline base64: {e}")),
+        };
 
     // Decode both PNGs to RGBA using the png crate (no browser round-trip)
     let baseline_rgba = match decode_png_to_rgba(&baseline_bytes) {
@@ -172,13 +177,7 @@ pub(in crate::daemon) async fn cmd_diff_screenshot(
     );
 
     // Generate diff image and save to disk
-    let diff_path = match generate_diff_image(
-        &baseline_rgba,
-        &current_rgba,
-        threshold,
-    )
-    .await
-    {
+    let diff_path = match generate_diff_image(&baseline_rgba, &current_rgba, threshold).await {
         Ok(p) => p,
         Err(e) => return Response::error(format!("diff image: {e}")),
     };
@@ -203,7 +202,9 @@ struct RgbaImage {
 /// Decode a PNG buffer to RGBA pixel data using the `png` crate.
 fn decode_png_to_rgba(data: &[u8]) -> Result<RgbaImage, String> {
     let decoder = png::Decoder::new(std::io::Cursor::new(data));
-    let mut reader = decoder.read_info().map_err(|e| format!("png header: {e}"))?;
+    let mut reader = decoder
+        .read_info()
+        .map_err(|e| format!("png header: {e}"))?;
     let mut buf = vec![0u8; reader.output_buffer_size().unwrap_or(0)];
     let info = reader
         .next_frame(&mut buf)
@@ -239,7 +240,9 @@ fn decode_png_to_rgba(data: &[u8]) -> Result<RgbaImage, String> {
             }
             rgba
         }
-        other @ png::ColorType::Indexed => return Err(format!("unsupported color type: {other:?}")),
+        other @ png::ColorType::Indexed => {
+            return Err(format!("unsupported color type: {other:?}"));
+        }
     };
 
     Ok(RgbaImage {
@@ -268,7 +271,12 @@ async fn generate_diff_image(
             let get_pixel = |img: &RgbaImage, px: u32, py: u32| -> [u8; 4] {
                 if px < img.width && py < img.height {
                     let i = ((py * img.width + px) * 4) as usize;
-                    [img.pixels[i], img.pixels[i + 1], img.pixels[i + 2], img.pixels[i + 3]]
+                    [
+                        img.pixels[i],
+                        img.pixels[i + 1],
+                        img.pixels[i + 2],
+                        img.pixels[i + 3],
+                    ]
                 } else {
                     [0, 0, 0, 0]
                 }
@@ -287,17 +295,13 @@ async fn generate_diff_image(
                 diff_pixels[di] = 255;
                 diff_pixels[di + 1] = 0;
                 diff_pixels[di + 2] = 0;
-                diff_pixels[di + 3] = 255;
             } else {
-                // Same: dimmed baseline
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                {
-                    diff_pixels[di] = (f64::from(a[0]) * 0.3) as u8;
-                    diff_pixels[di + 1] = (f64::from(a[1]) * 0.3) as u8;
-                    diff_pixels[di + 2] = (f64::from(a[2]) * 0.3) as u8;
-                    diff_pixels[di + 3] = 255;
-                }
+                // Same: dimmed baseline (integer approximation of ×0.3)
+                diff_pixels[di] = (u16::from(a[0]) * 77 / 256) as u8;
+                diff_pixels[di + 1] = (u16::from(a[1]) * 77 / 256) as u8;
+                diff_pixels[di + 2] = (u16::from(a[2]) * 77 / 256) as u8;
             }
+            diff_pixels[di + 3] = 255;
         }
     }
 
@@ -321,7 +325,9 @@ async fn generate_diff_image(
     let mut encoder = png::Encoder::new(buf_writer, w, h);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
-    let mut writer = encoder.write_header().map_err(|e| format!("png header: {e}"))?;
+    let mut writer = encoder
+        .write_header()
+        .map_err(|e| format!("png header: {e}"))?;
     writer
         .write_image_data(&diff_pixels)
         .map_err(|e| format!("png write: {e}"))?;

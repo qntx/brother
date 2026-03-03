@@ -35,10 +35,10 @@ mod page;
 mod snapshot;
 
 pub use browser::Browser;
-pub use config::{BrowserConfig, DevicePreset, DEVICE_PRESETS};
+pub use config::{BrowserConfig, DEVICE_PRESETS, DevicePreset};
+pub use diff::{ScreenshotDiff, SnapshotDiff, diff_rgba, diff_snapshots};
 pub use error::{Error, Result};
 pub use page::{
     ConsoleEntry, CookieInput, DialogInfo, JsError, MouseButton, Page, ScrollDirection,
 };
-pub use diff::{diff_rgba, diff_snapshots, ScreenshotDiff, SnapshotDiff};
 pub use snapshot::{Ref, RefMap, Snapshot, SnapshotOptions};

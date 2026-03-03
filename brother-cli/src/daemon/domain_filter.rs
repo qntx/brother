@@ -16,8 +16,10 @@ pub fn is_allowed(hostname: &str, patterns: &[String]) -> bool {
     let h = hostname.to_ascii_lowercase();
     patterns.iter().any(|pat| {
         let p = pat.to_ascii_lowercase();
-        p.strip_prefix("*.")
-            .map_or_else(|| h == p, |suffix| h == suffix || h.ends_with(&format!(".{suffix}")))
+        p.strip_prefix("*.").map_or_else(
+            || h == p,
+            |suffix| h == suffix || h.ends_with(&format!(".{suffix}")),
+        )
     })
 }
 
@@ -26,7 +28,9 @@ pub fn is_allowed(hostname: &str, patterns: &[String]) -> bool {
 ///
 /// Uses simple string parsing to avoid pulling in the `url` crate.
 pub fn extract_host(url: &str) -> Option<String> {
-    let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
     let authority = rest.split('/').next()?;
     // strip optional userinfo (user:pass@)
     let host_port = authority.rsplit('@').next()?;

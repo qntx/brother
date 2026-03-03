@@ -328,7 +328,9 @@ impl Page {
     async fn call_text_on_target(&self, target: &str, function: &str) -> Result<String> {
         let oid = self.resolve_target_object(target).await?;
         let val = self.call_fn_on(oid, function).await?;
-        Ok(val.and_then(|v| v.as_str().map(String::from)).unwrap_or_default())
+        Ok(val
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default())
     }
 
     /// Resolve a ref to a `RemoteObjectId` (fast path + JS fallback).

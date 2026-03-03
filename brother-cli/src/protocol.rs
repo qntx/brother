@@ -844,19 +844,45 @@ pub enum RouteAction {
 }
 
 // Serde default-value helpers (grouped to reduce boilerplate).
-const fn default_viewport_width() -> u32 { 1280 }
-const fn default_viewport_height() -> u32 { 720 }
-const fn default_diff_threshold() -> u8 { 10 }
-const fn default_scroll_px() -> i64 { 500 }
-const fn default_status() -> u16 { 200 }
-fn default_content_type() -> String { "text/plain".into() }
-const fn default_geo_accuracy() -> f64 { 1.0 }
-const fn default_true() -> bool { true }
-const fn default_click_count() -> u32 { 1 }
-fn default_screenshot_format() -> String { "png".into() }
-const fn default_jpeg_quality() -> u8 { 80 }
-fn default_screencast_format() -> String { "jpeg".into() }
-const fn default_screencast_quality() -> u32 { 80 }
+const fn default_viewport_width() -> u32 {
+    1280
+}
+const fn default_viewport_height() -> u32 {
+    720
+}
+const fn default_diff_threshold() -> u8 {
+    10
+}
+const fn default_scroll_px() -> i64 {
+    500
+}
+const fn default_status() -> u16 {
+    200
+}
+fn default_content_type() -> String {
+    "text/plain".into()
+}
+const fn default_geo_accuracy() -> f64 {
+    1.0
+}
+const fn default_true() -> bool {
+    true
+}
+const fn default_click_count() -> u32 {
+    1
+}
+fn default_screenshot_format() -> String {
+    "png".into()
+}
+const fn default_jpeg_quality() -> u8 {
+    80
+}
+fn default_screencast_format() -> String {
+    "jpeg".into()
+}
+const fn default_screencast_quality() -> u32 {
+    80
+}
 
 /// Strategy to wait after navigation.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -1081,4 +1107,3 @@ pub fn port_file_path_for(session: &str) -> Option<std::path::PathBuf> {
 pub fn pid_file_path_for(session: &str) -> Option<std::path::PathBuf> {
     runtime_dir().map(|d| d.join(format!("{session}.pid")))
 }
-

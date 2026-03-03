@@ -7,7 +7,7 @@ use tokio::sync::Mutex;
 
 use crate::protocol::{Response, ResponseData};
 
-use super::super::{get_page, DaemonState};
+use super::super::{DaemonState, get_page};
 
 /// Directory for saved states: `~/.brother/sessions/`.
 fn sessions_dir() -> Option<std::path::PathBuf> {
@@ -20,7 +20,11 @@ fn validate_state_name(name: &str) -> Result<(), Response> {
     if name == "*" {
         return Ok(()); // wildcard is allowed for clear-all
     }
-    if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
         return Err(Response::error(format!(
             "invalid state name '{name}': only alphanumeric, hyphens, and underscores allowed"
         )));
@@ -145,7 +149,9 @@ pub(in crate::daemon) async fn cmd_state_load(
             let escaped_k = k.replace('\\', "\\\\").replace('\'', "\\'");
             let escaped_v = val.replace('\\', "\\\\").replace('\'', "\\'");
             let _ = page
-                .eval(&format!("localStorage.setItem('{escaped_k}', '{escaped_v}')"))
+                .eval(&format!(
+                    "localStorage.setItem('{escaped_k}', '{escaped_v}')"
+                ))
                 .await;
         }
     }
@@ -172,9 +178,7 @@ pub(in crate::daemon) async fn cmd_state_load(
 /// List all saved state files.
 pub(in crate::daemon) async fn cmd_state_list() -> Response {
     let Some(dir) = sessions_dir() else {
-        return Response::ok_data(ResponseData::StateList {
-            states: Vec::new(),
-        });
+        return Response::ok_data(ResponseData::StateList { states: Vec::new() });
     };
     let mut names = Vec::new();
     if let Ok(mut rd) = tokio::fs::read_dir(&dir).await {
@@ -201,11 +205,7 @@ pub(in crate::daemon) async fn cmd_state_clear(name: &str) -> Response {
         let mut count = 0usize;
         if let Ok(mut rd) = tokio::fs::read_dir(&dir).await {
             while let Ok(Some(entry)) = rd.next_entry().await {
-                if entry
-                    .file_name()
-                    .to_string_lossy()
-                    .ends_with(".json")
-                {
+                if entry.file_name().to_string_lossy().ends_with(".json") {
                     let _ = tokio::fs::remove_file(entry.path()).await;
                     count += 1;
                 }

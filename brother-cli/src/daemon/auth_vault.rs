@@ -205,8 +205,8 @@ fn read_profile(name: &str) -> Result<Option<AuthProfile>, String> {
 
 fn write_profile(profile: &AuthProfile) -> Result<(), String> {
     let key = get_encryption_key()?;
-    let json = serde_json::to_string_pretty(profile)
-        .map_err(|e| format!("serialization failed: {e}"))?;
+    let json =
+        serde_json::to_string_pretty(profile).map_err(|e| format!("serialization failed: {e}"))?;
     let payload = encrypt(json.as_bytes(), &key)?;
     let encrypted_json =
         serde_json::to_string_pretty(&payload).map_err(|e| format!("serialization failed: {e}"))?;
@@ -277,8 +277,7 @@ pub fn get_profile_meta(name: &str) -> Result<Option<AuthProfileMeta>, String> {
 /// Returns an error if reading the auth directory fails.
 pub fn list_profiles() -> Result<Vec<AuthProfileMeta>, String> {
     let dir = auth_dir();
-    let entries =
-        fs::read_dir(&dir).map_err(|e| format!("cannot read auth directory: {e}"))?;
+    let entries = fs::read_dir(&dir).map_err(|e| format!("cannot read auth directory: {e}"))?;
 
     let mut profiles = Vec::new();
     for entry in entries.flatten() {
@@ -349,11 +348,12 @@ fn chrono_now() -> String {
     let mut y = 1970u64;
     let mut remaining_days = days;
     loop {
-        let days_in_year = if y.is_multiple_of(4) && (!y.is_multiple_of(100) || y.is_multiple_of(400)) {
-            366
-        } else {
-            365
-        };
+        let days_in_year =
+            if y.is_multiple_of(4) && (!y.is_multiple_of(100) || y.is_multiple_of(400)) {
+                366
+            } else {
+                365
+            };
         if remaining_days < days_in_year {
             break;
         }

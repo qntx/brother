@@ -13,12 +13,19 @@ use super::Page;
 /// at the node whose `backendDOMNodeId` matches `target_backend_id`.
 ///
 /// Walks from the matching root and collects all descendants via `childIds`.
-fn filter_subtree(all_nodes: &[serde_json::Value], target_backend_id: i64) -> Vec<serde_json::Value> {
+fn filter_subtree(
+    all_nodes: &[serde_json::Value],
+    target_backend_id: i64,
+) -> Vec<serde_json::Value> {
     // Find the AX node whose backendDOMNodeId matches
     let root_node_id = all_nodes.iter().find_map(|n| {
-        let bid = n.get("backendDOMNodeId").and_then(serde_json::Value::as_i64)?;
+        let bid = n
+            .get("backendDOMNodeId")
+            .and_then(serde_json::Value::as_i64)?;
         if bid == target_backend_id {
-            n.get("nodeId").and_then(serde_json::Value::as_str).map(ToOwned::to_owned)
+            n.get("nodeId")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
         } else {
             None
         }

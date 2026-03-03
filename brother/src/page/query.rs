@@ -227,9 +227,7 @@ impl Page {
     /// Highlight an element using CDP `Overlay.highlightNode`.
     pub async fn highlight(&self, target: &str) -> Result<()> {
         use chromiumoxide::cdp::browser_protocol::dom::Rgba;
-        use chromiumoxide::cdp::browser_protocol::overlay::{
-            HighlightConfig, HighlightNodeParams,
-        };
+        use chromiumoxide::cdp::browser_protocol::overlay::{HighlightConfig, HighlightNodeParams};
 
         let object_id = self.resolve_target_object(target).await?;
 
