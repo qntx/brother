@@ -237,10 +237,12 @@ pub enum Request {
         /// Ref or CSS selector.
         target: String,
     },
-    /// Get the bounding box of an element.
-    BoundingBox {
+    /// Set an input's value directly (no events fired).
+    SetValue {
         /// Ref or CSS selector.
         target: String,
+        /// Value to set.
+        value: String,
     },
     /// Set the page HTML content directly.
     SetContent {
@@ -355,26 +357,6 @@ pub enum Request {
         #[serde(default)]
         forced_colors: Option<String>,
     },
-    /// Find elements by semantic locator and optionally act on them.
-    Find {
-        /// Locator type: `role`, `text`, `label`, `placeholder`, `testid`, `alttext`, `title`.
-        by: String,
-        /// Value to search for.
-        value: String,
-        /// Optional name filter (only for `role` locator).
-        #[serde(default)]
-        name: Option<String>,
-        /// Exact text match (default false).
-        #[serde(default)]
-        exact: bool,
-        /// Optional sub-action: `click`, `fill`, `check`, `hover`.
-        /// If absent, returns matched elements without acting.
-        #[serde(default)]
-        subaction: Option<String>,
-        /// Value for `fill` sub-action.
-        #[serde(default)]
-        fill_value: Option<String>,
-    },
 
     /// Emulate a device preset (sets viewport + user-agent).
     Device {
@@ -470,21 +452,6 @@ pub enum Request {
         event_init: Option<String>,
     },
 
-    /// Get computed styles of an element.
-    Styles {
-        /// Ref or CSS selector.
-        target: String,
-    },
-    /// Select all text in an element.
-    SelectAll {
-        /// Ref or CSS selector.
-        target: String,
-    },
-    /// Highlight an element with a visible overlay (for debugging).
-    Highlight {
-        /// Ref or CSS selector.
-        target: String,
-    },
     /// Move the mouse to absolute coordinates.
     MouseMove {
         /// X coordinate.
@@ -521,12 +488,26 @@ pub enum Request {
         /// Ref or CSS selector.
         target: String,
     },
-    /// Set an input's value directly (no events fired).
-    SetValue {
+
+    /// Get the bounding box of an element.
+    BoundingBox {
         /// Ref or CSS selector.
         target: String,
-        /// Value to set.
-        value: String,
+    },
+    /// Get computed styles of an element.
+    Styles {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Select all text in an element.
+    SelectAll {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Highlight an element with a visible overlay (for debugging).
+    Highlight {
+        /// Ref or CSS selector.
+        target: String,
     },
 
     /// Get text content (whole page or scoped by target).
@@ -583,6 +564,26 @@ pub enum Request {
     Count {
         /// CSS selector.
         selector: String,
+    },
+    /// Find elements by semantic locator and optionally act on them.
+    Find {
+        /// Locator type: `role`, `text`, `label`, `placeholder`, `testid`, `alttext`, `title`.
+        by: String,
+        /// Value to search for.
+        value: String,
+        /// Optional name filter (only for `role` locator).
+        #[serde(default)]
+        name: Option<String>,
+        /// Exact text match (default false).
+        #[serde(default)]
+        exact: bool,
+        /// Optional sub-action: `click`, `fill`, `check`, `hover`.
+        /// If absent, returns matched elements without acting.
+        #[serde(default)]
+        subaction: Option<String>,
+        /// Value for `fill` sub-action.
+        #[serde(default)]
+        fill_value: Option<String>,
     },
     /// Select the nth element matching a CSS selector and optionally act on it.
     Nth {

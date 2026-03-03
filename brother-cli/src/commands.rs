@@ -10,11 +10,33 @@ pub enum Command {
         #[arg(default_value = "9222")]
         target: String,
     },
+    /// Check daemon and browser status.
+    Status,
+    /// Close the browser and stop the daemon.
+    Close,
+    /// (Hidden) Run the daemon server.
+    #[command(hide = true)]
+    Daemon,
+
     /// Navigate to a URL.
     Open {
         /// Target URL.
         url: String,
     },
+    /// Go back in history.
+    Back,
+    /// Go forward in history.
+    Forward,
+    /// Reload the current page.
+    Reload,
+    /// Switch to a child frame (iframe) by name, URL, or index.
+    Frame {
+        /// Frame name, URL substring, or numeric index.
+        selector: String,
+    },
+    /// Switch back to the main (top-level) frame.
+    MainFrame,
+
     /// Capture an accessibility snapshot.
     Snapshot {
         /// Only interactive elements.
@@ -33,6 +55,64 @@ pub enum Command {
         #[arg(short = 'C', long)]
         cursor: bool,
     },
+    /// Capture a screenshot.
+    Screenshot {
+        /// Output file path (auto-generated if omitted).
+        #[arg(short, long)]
+        output: Option<String>,
+        /// Capture the full scrollable page.
+        #[arg(long)]
+        full_page: bool,
+        /// CSS selector to screenshot a specific element.
+        #[arg(short, long)]
+        selector: Option<String>,
+        /// Image format: `png` or `jpeg`.
+        #[arg(short, long, default_value = "png")]
+        format: String,
+        /// JPEG quality (1-100).
+        #[arg(short, long, default_value = "80")]
+        quality: u8,
+    },
+    /// Evaluate a `JavaScript` expression.
+    Eval {
+        /// JS expression.
+        expression: String,
+    },
+    /// Get text content of the page or an element.
+    #[command(name = "get")]
+    Get {
+        /// What to get: `text`, `innertext`, `content`, `url`, `title`, `html`, `value`, `attribute`.
+        what: String,
+        /// Optional target (ref or CSS selector).
+        target: Option<String>,
+        /// Attribute name (for `get attribute`).
+        #[arg(short, long)]
+        attr: Option<String>,
+    },
+    /// Query element state: visible, enabled, checked, or count elements.
+    #[command(name = "query", visible_alias = "is")]
+    Query {
+        /// What to check: `visible`, `enabled`, `checked`, `count`.
+        what: String,
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Get bounding box (x, y, width, height) of an element.
+    BoundingBox {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Get computed styles of an element.
+    Styles {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Highlight an element with a red border (for debugging).
+    Highlight {
+        /// Ref or CSS selector.
+        target: String,
+    },
+
     /// Click an element by ref (`@e1`) or CSS selector.
     Click {
         /// Ref or CSS selector.
@@ -120,13 +200,49 @@ pub enum Command {
         #[arg(short, long)]
         target: Option<String>,
     },
-    /// Switch to a child frame (iframe) by name, URL, or index.
-    Frame {
-        /// Frame name, URL substring, or numeric index.
-        selector: String,
+    /// Scroll an element into view.
+    ScrollIntoView {
+        /// Ref or CSS selector.
+        target: String,
     },
-    /// Switch back to the main (top-level) frame.
-    MainFrame,
+    /// Clear an input field.
+    Clear {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Set an input value directly (no events).
+    SetValue {
+        /// Ref or CSS selector.
+        target: String,
+        /// Value to set.
+        value: String,
+    },
+    /// Drag one element onto another.
+    Drag {
+        /// Source ref or CSS selector.
+        source: String,
+        /// Drop target ref or CSS selector.
+        target: String,
+    },
+    /// Upload files to a file input.
+    Upload {
+        /// Ref or CSS selector of the `<input type="file">`.
+        target: String,
+        /// File paths to upload.
+        #[arg(required = true)]
+        files: Vec<String>,
+    },
+    /// Touch-tap an element.
+    Tap {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Select all text in an element.
+    SelectAll {
+        /// Ref or CSS selector.
+        target: String,
+    },
+
     /// Hold a key down (without releasing).
     KeyDown {
         /// Key name (e.g. `Shift`, `a`).
@@ -142,87 +258,60 @@ pub enum Command {
         /// Text to insert.
         text: String,
     },
-    /// Upload files to a file input.
-    Upload {
-        /// Ref or CSS selector of the `<input type="file">`.
-        target: String,
-        /// File paths to upload.
-        #[arg(required = true)]
-        files: Vec<String>,
-    },
-    /// Drag one element onto another.
-    Drag {
-        /// Source ref or CSS selector.
-        source: String,
-        /// Drop target ref or CSS selector.
-        target: String,
-    },
-    /// Clear an input field.
-    Clear {
-        /// Ref or CSS selector.
-        target: String,
-    },
-    /// Scroll an element into view.
-    ScrollIntoView {
-        /// Ref or CSS selector.
-        target: String,
-    },
-    /// Get bounding box (x, y, width, height) of an element.
-    BoundingBox {
-        /// Ref or CSS selector.
-        target: String,
-    },
-    /// Set the page HTML content directly.
-    SetContent {
-        /// HTML content.
-        html: String,
-    },
-    /// Export the page as PDF.
-    Pdf {
-        /// Output file path.
-        #[arg(default_value = "page.pdf")]
-        path: String,
-    },
-    /// Capture a screenshot.
-    Screenshot {
-        /// Output file path (auto-generated if omitted).
-        #[arg(short, long)]
-        output: Option<String>,
-        /// Capture the full scrollable page.
-        #[arg(long)]
-        full_page: bool,
-        /// CSS selector to screenshot a specific element.
+    /// Low-level mouse control: move, down, up.
+    #[command(subcommand)]
+    Mouse(MouseSub),
+    /// Scroll with the mouse wheel.
+    Wheel {
+        /// Vertical scroll delta (pixels, positive = down).
+        #[arg(default_value = "0")]
+        delta_y: f64,
+        /// Horizontal scroll delta.
+        #[arg(short = 'x', long, default_value = "0")]
+        delta_x: f64,
+        /// Optional CSS selector to hover first.
         #[arg(short, long)]
         selector: Option<String>,
-        /// Image format: `png` or `jpeg`.
-        #[arg(short, long, default_value = "png")]
-        format: String,
-        /// JPEG quality (1-100).
-        #[arg(short, long, default_value = "80")]
-        quality: u8,
     },
-    /// Evaluate a `JavaScript` expression.
-    Eval {
-        /// JS expression.
-        expression: String,
-    },
-    /// Get text content of the page or an element.
-    #[command(name = "get")]
-    Get {
-        /// What to get: `text`, `innertext`, `content`, `url`, `title`, `html`, `value`, `attribute`.
-        what: String,
-        /// Optional target (ref or CSS selector).
-        target: Option<String>,
-        /// Attribute name (for `get attribute`).
+
+    /// Find elements by semantic locator and optionally act on them.
+    Find {
+        /// Locator type: `role`, `text`, `label`, `placeholder`, `testid`, `alttext`, `title`.
+        by: String,
+        /// Value to search for.
+        value: String,
+        /// Name filter (only for `role` locator).
         #[arg(short, long)]
-        attr: Option<String>,
+        name: Option<String>,
+        /// Exact match (for `text`, `alttext`, `title` locators).
+        #[arg(long)]
+        exact: bool,
+        /// Sub-action: `click`, `fill`, `check`, `hover`. If omitted, just list matches.
+        #[arg(short, long)]
+        subaction: Option<String>,
+        /// Value for `fill` sub-action.
+        #[arg(long)]
+        fill_value: Option<String>,
     },
-    /// Go back in history.
-    Back,
-    /// Go forward in history.
-    Forward,
-    /// Reload the current page.
-    Reload,
+    /// Select the nth element and optionally act on it (0-indexed, -1 for last).
+    Nth {
+        /// CSS selector.
+        selector: String,
+        /// 0-based index (-1 for last).
+        index: i64,
+        /// Sub-action: `click`, `fill`, `check`, `hover`, `text`.
+        #[arg(short, long)]
+        subaction: Option<String>,
+        /// Value for `fill` sub-action.
+        #[arg(long)]
+        fill_value: Option<String>,
+    },
+    /// Expose a named function to the page's `window` object.
+    Expose {
+        /// Function name (e.g. `myCallback`).
+        name: String,
+    },
+
     /// Wait for a condition.
     Wait {
         /// CSS selector, duration (ms), or omit for flag-based wait.
@@ -243,51 +332,7 @@ pub enum Command {
         #[arg(short, long, default_value = "30000")]
         timeout: u64,
     },
-    /// Query element state: visible, enabled, checked, or count elements.
-    #[command(name = "query", visible_alias = "is")]
-    Query {
-        /// What to check: `visible`, `enabled`, `checked`, `count`.
-        what: String,
-        /// Ref or CSS selector.
-        target: String,
-    },
-    /// Select the nth element and optionally act on it (0-indexed, -1 for last).
-    Nth {
-        /// CSS selector.
-        selector: String,
-        /// 0-based index (-1 for last).
-        index: i64,
-        /// Sub-action: `click`, `fill`, `check`, `hover`, `text`.
-        #[arg(short, long)]
-        subaction: Option<String>,
-        /// Value for `fill` sub-action.
-        #[arg(long)]
-        fill_value: Option<String>,
-    },
-    /// Expose a named function to the page's `window` object.
-    Expose {
-        /// Function name (e.g. `myCallback`).
-        name: String,
-    },
-    /// Find elements by semantic locator and optionally act on them.
-    Find {
-        /// Locator type: `role`, `text`, `label`, `placeholder`, `testid`, `alttext`, `title`.
-        by: String,
-        /// Value to search for.
-        value: String,
-        /// Name filter (only for `role` locator).
-        #[arg(short, long)]
-        name: Option<String>,
-        /// Exact match (for `text`, `alttext`, `title` locators).
-        #[arg(long)]
-        exact: bool,
-        /// Sub-action: `click`, `fill`, `check`, `hover`. If omitted, just list matches.
-        #[arg(short, long)]
-        subaction: Option<String>,
-        /// Value for `fill` sub-action.
-        #[arg(long)]
-        fill_value: Option<String>,
-    },
+
     /// Emulate a device preset (viewport + user-agent).
     Device {
         /// Device name (e.g. `iphone-14`, `pixel-7`, `ipad-pro`, `desktop-hd`).
@@ -295,15 +340,6 @@ pub enum Command {
     },
     /// List all available device presets.
     DeviceList,
-    /// Open a new browser window.
-    WindowNew {
-        /// Viewport width.
-        #[arg(long)]
-        width: Option<u32>,
-        /// Viewport height.
-        #[arg(long)]
-        height: Option<u32>,
-    },
     /// Set viewport size.
     Viewport {
         /// Width in pixels.
@@ -379,48 +415,7 @@ pub enum Command {
     },
     /// Bring the current page to front.
     BringToFront,
-    /// Get computed styles of an element.
-    Styles {
-        /// Ref or CSS selector.
-        target: String,
-    },
-    /// Select all text in an element.
-    SelectAll {
-        /// Ref or CSS selector.
-        target: String,
-    },
-    /// Highlight an element with a red border (for debugging).
-    Highlight {
-        /// Ref or CSS selector.
-        target: String,
-    },
-    /// Low-level mouse control: move, down, up.
-    #[command(subcommand)]
-    Mouse(MouseSub),
-    /// Scroll with the mouse wheel.
-    Wheel {
-        /// Vertical scroll delta (pixels, positive = down).
-        #[arg(default_value = "0")]
-        delta_y: f64,
-        /// Horizontal scroll delta.
-        #[arg(short = 'x', long, default_value = "0")]
-        delta_x: f64,
-        /// Optional CSS selector to hover first.
-        #[arg(short, long)]
-        selector: Option<String>,
-    },
-    /// Touch-tap an element.
-    Tap {
-        /// Ref or CSS selector.
-        target: String,
-    },
-    /// Set an input value directly (no events).
-    SetValue {
-        /// Ref or CSS selector.
-        target: String,
-        /// Value to set.
-        value: String,
-    },
+
     /// Add a script to run on every new document (before page JS).
     AddInitScript {
         /// `JavaScript` source code.
@@ -454,9 +449,74 @@ pub enum Command {
         #[arg(short, long)]
         init: Option<String>,
     },
+    /// Set the page HTML content directly.
+    SetContent {
+        /// HTML content.
+        html: String,
+    },
+    /// Export the page as PDF.
+    Pdf {
+        /// Output file path.
+        #[arg(default_value = "page.pdf")]
+        path: String,
+    },
+
+    /// Dialog handling: message, accept, dismiss.
+    #[command(subcommand)]
+    Dialog(DialogSub),
+    /// Cookie management: get, set, clear.
+    #[command(subcommand)]
+    Cookie(CookieSub),
+    /// Storage management: get, set, clear.
+    #[command(subcommand)]
+    Storage(StorageSub),
     /// Clipboard: read, write.
     #[command(subcommand)]
     Clipboard(ClipboardSub),
+
+    /// Open a new browser window.
+    WindowNew {
+        /// Viewport width.
+        #[arg(long)]
+        width: Option<u32>,
+        /// Viewport height.
+        #[arg(long)]
+        height: Option<u32>,
+    },
+    /// Tab management: new, list, select, close.
+    #[command(subcommand)]
+    Tab(TabSub),
+
+    /// Intercept network requests matching a URL pattern.
+    Route {
+        /// URL substring to match.
+        pattern: String,
+        /// Action: `fulfill` or `abort`.
+        #[arg(short, long, default_value = "abort")]
+        action: String,
+        /// HTTP status code (for fulfill).
+        #[arg(short, long, default_value = "200")]
+        status: u16,
+        /// Response body (for fulfill).
+        #[arg(short, long, default_value = "")]
+        body: String,
+        /// Content-Type header (for fulfill).
+        #[arg(short, long, default_value = "text/plain")]
+        content_type: String,
+    },
+    /// Remove a network route. Use `*` to remove all.
+    Unroute {
+        /// URL pattern to remove, or `*` for all.
+        pattern: String,
+    },
+    /// List captured network requests.
+    Requests {
+        /// Optional: `clear` to clear the buffer.
+        action: Option<String>,
+        /// URL pattern to filter results.
+        #[arg(short, long)]
+        filter: Option<String>,
+    },
     /// Set download directory path.
     SetDownloadPath {
         /// Absolute directory path.
@@ -496,48 +556,12 @@ pub enum Command {
         #[arg(short, long, default_value = "30000")]
         timeout: u64,
     },
-    /// Intercept network requests matching a URL pattern.
-    Route {
-        /// URL substring to match.
-        pattern: String,
-        /// Action: `fulfill` or `abort`.
-        #[arg(short, long, default_value = "abort")]
-        action: String,
-        /// HTTP status code (for fulfill).
-        #[arg(short, long, default_value = "200")]
-        status: u16,
-        /// Response body (for fulfill).
-        #[arg(short, long, default_value = "")]
-        body: String,
-        /// Content-Type header (for fulfill).
-        #[arg(short, long, default_value = "text/plain")]
-        content_type: String,
+    /// Set allowed domains for navigation (security filter).
+    AllowedDomains {
+        /// Domain patterns (e.g. `example.com *.github.com`).
+        domains: Vec<String>,
     },
-    /// Remove a network route. Use `*` to remove all.
-    Unroute {
-        /// URL pattern to remove, or `*` for all.
-        pattern: String,
-    },
-    /// List captured network requests.
-    Requests {
-        /// Optional: `clear` to clear the buffer.
-        action: Option<String>,
-        /// URL pattern to filter results.
-        #[arg(short, long)]
-        filter: Option<String>,
-    },
-    /// Dialog handling: message, accept, dismiss.
-    #[command(subcommand)]
-    Dialog(DialogSub),
-    /// Cookie management: get, set, clear.
-    #[command(subcommand)]
-    Cookie(CookieSub),
-    /// Storage management: get, set, clear.
-    #[command(subcommand)]
-    Storage(StorageSub),
-    /// Tab management: new, list, select, close.
-    #[command(subcommand)]
-    Tab(TabSub),
+
     /// Get captured console messages (drains buffer).
     Console {
         /// Clear logs without returning them.
@@ -550,6 +574,19 @@ pub enum Command {
         #[arg(long)]
         clear: bool,
     },
+    /// CDP tracing: start, stop.
+    #[command(subcommand)]
+    Trace(TraceSub),
+    /// CDP Profiler: start, stop.
+    #[command(subcommand)]
+    Profiler(ProfilerSub),
+    /// CDP screencast: start, stop.
+    #[command(subcommand)]
+    Screencast(ScreencastSub),
+    /// HAR (HTTP Archive) recording: start, stop.
+    #[command(subcommand)]
+    Har(HarSub),
+
     /// Compare current snapshot against a baseline file or text.
     #[command(name = "diff")]
     DiffSnapshot {
@@ -557,39 +594,9 @@ pub enum Command {
         #[command(subcommand)]
         sub: DiffSub,
     },
-
     /// Save/load browser state (cookies + storage).
     #[command(subcommand)]
     State(StateSub),
-
-    /// CDP tracing: start, stop.
-    #[command(subcommand)]
-    Trace(TraceSub),
-    /// CDP Profiler: start, stop.
-    #[command(subcommand)]
-    Profiler(ProfilerSub),
-
-    /// CDP screencast: start, stop.
-    #[command(subcommand)]
-    Screencast(ScreencastSub),
-
-    /// HAR (HTTP Archive) recording: start, stop.
-    #[command(subcommand)]
-    Har(HarSub),
-
-    /// Set allowed domains for navigation (security filter).
-    AllowedDomains {
-        /// Domain patterns (e.g. `example.com *.github.com`).
-        domains: Vec<String>,
-    },
-
-    /// Check daemon and browser status.
-    Status,
-    /// Close the browser and stop the daemon.
-    Close,
-    /// (Hidden) Run the daemon server.
-    #[command(hide = true)]
-    Daemon,
 }
 
 /// Diff subcommands.

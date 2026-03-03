@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 
 use crate::protocol::{Request, Response, ResponseData};
 
-use super::{DaemonState, get_page, page_display, page_eval, page_ok, page_text};
+use super::{DaemonState, get_page, handlers, page_display, page_eval, page_ok, page_text};
 
 #[allow(clippy::cognitive_complexity, clippy::large_stack_frames)]
 pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> Response {
@@ -329,8 +329,6 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
         Request::Close => Response::ok(),
     }
 }
-
-use super::handlers;
 
 async fn check_policy(state: &Arc<Mutex<DaemonState>>, req: &Request) -> Option<Response> {
     let mut guard = state.lock().await;

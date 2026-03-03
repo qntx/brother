@@ -168,7 +168,7 @@ impl Page {
         Ok(())
     }
 
-    /// Type text with a per-character delay (0 = default behavior).
+    /// Type text with a per-character delay (0 = default 10 ms).
     pub async fn type_with_delay(
         &self,
         target: Option<&str>,
@@ -178,24 +178,8 @@ impl Page {
         if let Some(t) = target {
             self.focus(t).await?;
         }
-        if delay_ms == 0 {
-            return self.type_text(text).await;
-        }
-        for ch in text.chars() {
-            let s = ch.to_string();
-            self.inner
-                .execute(
-                    DispatchKeyEventParams::builder()
-                        .r#type(DispatchKeyEventType::Char)
-                        .text(s)
-                        .build()
-                        .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?,
-                )
-                .await
-                .map_err(Error::Cdp)?;
-            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-        }
-        Ok(())
+        let delay = if delay_ms == 0 { 10 } else { delay_ms };
+        self.type_chars(text, delay).await
     }
 
     /// Set an input value directly via JS (no key events fired).
@@ -236,8 +220,13 @@ impl Page {
         Ok(())
     }
 
-    /// Type text character by character.
+    /// Type text character by character (10 ms inter-key delay).
     pub async fn type_text(&self, text: &str) -> Result<()> {
+        self.type_chars(text, 10).await
+    }
+
+    /// Dispatch each character as a `Char` key event with `delay_ms` between keystrokes.
+    async fn type_chars(&self, text: &str, delay_ms: u64) -> Result<()> {
         for ch in text.chars() {
             self.inner
                 .execute(
@@ -249,7 +238,7 @@ impl Page {
                 )
                 .await
                 .map_err(Error::Cdp)?;
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
         }
         Ok(())
     }
