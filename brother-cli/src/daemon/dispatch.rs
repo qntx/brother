@@ -280,6 +280,48 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
             }
         }
 
+        // -- Nth / Expose ------------------------------------------------------
+        Request::Nth {
+            selector,
+            index,
+            click,
+        } => {
+            let page = match get_page(state).await {
+                Ok(p) => p,
+                Err(r) => return r,
+            };
+            if click {
+                match page.click_nth(&selector, index).await {
+                    Ok(()) => Response::ok(),
+                    Err(e) => Response::error(e.to_string()),
+                }
+            } else {
+                match page.nth(&selector, index).await {
+                    Ok(val) => Response::ok_data(ResponseData::Eval { value: val }),
+                    Err(e) => Response::error(e.to_string()),
+                }
+            }
+        }
+        Request::Expose { name } => {
+            let page = match get_page(state).await {
+                Ok(p) => p,
+                Err(r) => return r,
+            };
+            let escaped = name.replace('\\', "\\\\").replace('\'', "\\'");
+            let js = format!(
+                "window['{escaped}'] = (...args) => console.log(JSON.stringify({{ fn: '{escaped}', args }}))"
+            );
+            match page.add_init_script(&js).await {
+                Ok(()) => {
+                    let _ = page.eval(&js).await;
+                    Response::ok_data(ResponseData::Text {
+                        text: format!("function '{name}' exposed on window"),
+                    })
+                }
+                Err(e) => Response::error(format!("expose: {e}")),
+            }
+        }
+
         // -- Environment emulation --------------------------------------------
         Request::Device { name } => {
             let Some(preset) = brother::DevicePreset::lookup(&name) else {

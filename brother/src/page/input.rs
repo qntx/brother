@@ -11,15 +11,36 @@ use crate::error::{Error, Result};
 use super::{MouseButton, Page};
 
 impl Page {
-    /// Press a key combo (e.g. `"Enter"`, `"Tab"`, `"Control+a"`).
+    /// Press a key or combo (e.g. `"Enter"`, `"Tab"`, `"Control+a"`,
+    /// `"Shift+Control+ArrowUp"`).
+    ///
+    /// Modifier keys (`Control`, `Shift`, `Alt`, `Meta`) are held down
+    /// while the final key is pressed and released, then released in
+    /// reverse order.
     ///
     /// # Errors
     ///
     /// Returns an error if the CDP command fails.
     pub async fn key_press(&self, key: &str) -> Result<()> {
-        self.dispatch_key(DispatchKeyEventType::KeyDown, key)
+        let parts: Vec<&str> = key.split('+').collect();
+        if parts.len() == 1 {
+            self.dispatch_key(DispatchKeyEventType::KeyDown, key)
+                .await?;
+            return self.dispatch_key(DispatchKeyEventType::KeyUp, key).await;
+        }
+        // Hold modifiers, press final key, release in reverse
+        let (modifiers, final_key) = parts.split_at(parts.len() - 1);
+        for &m in modifiers {
+            self.dispatch_key(DispatchKeyEventType::KeyDown, m).await?;
+        }
+        self.dispatch_key(DispatchKeyEventType::KeyDown, final_key[0])
             .await?;
-        self.dispatch_key(DispatchKeyEventType::KeyUp, key).await
+        self.dispatch_key(DispatchKeyEventType::KeyUp, final_key[0])
+            .await?;
+        for &m in modifiers.iter().rev() {
+            self.dispatch_key(DispatchKeyEventType::KeyUp, m).await?;
+        }
+        Ok(())
     }
 
     /// Type text character by character.

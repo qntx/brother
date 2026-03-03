@@ -259,6 +259,21 @@ pub enum Command {
         /// Ref or CSS selector.
         target: String,
     },
+    /// Get or click the nth element matching a CSS selector (0-indexed).
+    Nth {
+        /// CSS selector.
+        selector: String,
+        /// 0-based index.
+        index: usize,
+        /// Click the element instead of just returning info.
+        #[arg(long)]
+        click: bool,
+    },
+    /// Expose a named function to the page's `window` object.
+    Expose {
+        /// Function name (e.g. `myCallback`).
+        name: String,
+    },
     /// Find elements by semantic locator.
     Find {
         /// Locator type: `role`, `text`, `label`, `placeholder`, `testid`, `alttext`, `title`.

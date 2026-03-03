@@ -355,6 +355,16 @@ pub fn build_request(cmd: &Command) -> Request {
                 },
             }
         }
+        Command::Nth {
+            selector,
+            index,
+            click,
+        } => Request::Nth {
+            selector: selector.clone(),
+            index: *index,
+            click: *click,
+        },
+        Command::Expose { name } => Request::Expose { name: name.clone() },
         Command::TabNew { url } => Request::TabNew { url: url.clone() },
         Command::TabList => Request::TabList,
         Command::TabSelect { index } => Request::TabSelect { index: *index },

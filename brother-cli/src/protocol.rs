@@ -587,6 +587,21 @@ pub enum Request {
         /// CSS selector.
         selector: String,
     },
+    /// Get or click the nth element matching a CSS selector (0-indexed).
+    Nth {
+        /// CSS selector.
+        selector: String,
+        /// 0-based index.
+        index: usize,
+        /// If true, click the element instead of just returning info.
+        #[serde(default)]
+        click: bool,
+    },
+    /// Expose a named function to the page's `window` object.
+    Expose {
+        /// Function name to expose (e.g. `"myCallback"`).
+        name: String,
+    },
 
     // -- Wait --------------------------------------------------------------
     /// Wait for a condition.

@@ -202,6 +202,44 @@ impl Page {
         Ok(())
     }
 
+    /// Get the nth element matching a CSS selector (0-indexed).
+    ///
+    /// Returns a JSON object with tag, text, and index.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the element is not found.
+    pub async fn nth(&self, selector: &str, index: usize) -> Result<serde_json::Value> {
+        let escaped = selector.replace('\\', "\\\\").replace('\'', "\\'");
+        let js = format!(
+            r"(() => {{
+                const els = document.querySelectorAll('{escaped}');
+                if ({index} >= els.length) throw new Error('index {index} out of range, found ' + els.length + ' elements');
+                const el = els[{index}];
+                return {{ tag: el.tagName.toLowerCase(), text: el.textContent.trim().substring(0, 100), index: {index}, total: els.length }};
+            }})()"
+        );
+        self.eval(&js).await
+    }
+
+    /// Click the nth element matching a CSS selector (0-indexed).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the element is not found.
+    pub async fn click_nth(&self, selector: &str, index: usize) -> Result<()> {
+        let escaped = selector.replace('\\', "\\\\").replace('\'', "\\'");
+        let js = format!(
+            r"(() => {{
+                const els = document.querySelectorAll('{escaped}');
+                if ({index} >= els.length) throw new Error('index {index} out of range, found ' + els.length + ' elements');
+                els[{index}].click();
+            }})()"
+        );
+        self.eval(&js).await?;
+        Ok(())
+    }
+
     /// Highlight an element with a visible red border overlay.
     ///
     /// # Errors
