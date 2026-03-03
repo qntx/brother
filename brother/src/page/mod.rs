@@ -240,10 +240,6 @@ impl Page {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Low-level access
-    // -----------------------------------------------------------------------
-
     /// Access the underlying `chromiumoxide::Page`.
     #[must_use]
     pub const fn inner(&self) -> &chromiumoxide::Page {
@@ -253,10 +249,6 @@ impl Page {
     // NOTE: For arbitrary CDP commands (tracing, profiler, etc.), use
     // `page.inner().execute(params)` directly. The `inner()` accessor
     // provides full access to chromiumoxide's typed CDP API.
-
-    // -----------------------------------------------------------------------
-    // Internal: target resolution
-    // -----------------------------------------------------------------------
 
     /// Check if a target string looks like a ref.
     fn is_ref(target: &str) -> bool {
@@ -361,10 +353,6 @@ impl Page {
             .unwrap_or_default())
     }
 
-    // -----------------------------------------------------------------------
-    // Internal: ref resolution (two-phase)
-    // -----------------------------------------------------------------------
-
     /// Resolve a ref to a `RemoteObjectId` (fast path + JS fallback).
     async fn resolve_ref_to_object(
         &self,
@@ -461,10 +449,6 @@ impl Page {
             ))
         })
     }
-
-    // -----------------------------------------------------------------------
-    // Internal: CDP primitives
-    // -----------------------------------------------------------------------
 
     /// Resolve a backend node ID to `RemoteObjectId`.
     async fn resolve_backend_node(

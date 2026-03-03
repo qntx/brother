@@ -143,10 +143,6 @@ pub async fn run_session(session: &str, idle_timeout: Option<Duration>) -> broth
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Connection handler
-// ---------------------------------------------------------------------------
-
 async fn handle_connection(
     stream: tokio::net::TcpStream,
     state: Arc<Mutex<DaemonState>>,
@@ -192,10 +188,6 @@ async fn send(writer: &mut tokio::net::tcp::OwnedWriteHalf, resp: &Response) -> 
     let _ = writer.flush().await;
     true
 }
-
-// ---------------------------------------------------------------------------
-// Macros (must be defined before use in dispatch/handlers)
-// ---------------------------------------------------------------------------
 
 /// Execute a page method returning `Result<()>` → `Response::ok()` or error.
 ///
@@ -270,10 +262,6 @@ pub(crate) use page_eval;
 pub(crate) use page_ok;
 pub(crate) use page_text;
 
-// ---------------------------------------------------------------------------
-// Browser lifecycle helpers
-// ---------------------------------------------------------------------------
-
 async fn ensure_browser(state: &Arc<Mutex<DaemonState>>) -> Result<(), Response> {
     let mut guard = state.lock().await;
     if guard.browser.is_none() {
@@ -307,10 +295,6 @@ async fn get_page(state: &Arc<Mutex<DaemonState>>) -> Result<Page, Response> {
         .cloned()
         .ok_or_else(|| Response::error("no active page"))
 }
-
-// ---------------------------------------------------------------------------
-// File helpers
-// ---------------------------------------------------------------------------
 
 async fn write_port_file(session: &str, port: u16) -> brother::Result<()> {
     let path = crate::protocol::port_file_path_for(session)

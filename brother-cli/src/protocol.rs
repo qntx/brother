@@ -7,15 +7,10 @@
 use brother::{MouseButton, ScrollDirection, SnapshotOptions};
 use serde::{Deserialize, Serialize};
 
-// ---------------------------------------------------------------------------
-// Request  (CLI → Daemon)
-// ---------------------------------------------------------------------------
-
 /// A command sent from the CLI to the daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Request {
-    // -- Launch / Connection -----------------------------------------------
     /// Configure and launch the browser with specific options.
     /// Must be sent before any other command. Ignored if browser is already running.
     Launch {
@@ -66,7 +61,6 @@ pub enum Request {
         target: String,
     },
 
-    // -- Navigation --------------------------------------------------------
     /// Navigate the active page to a URL.
     Navigate {
         /// Target URL.
@@ -82,7 +76,6 @@ pub enum Request {
     /// Reload the current page.
     Reload,
 
-    // -- Observation -------------------------------------------------------
     /// Capture an accessibility snapshot.
     Snapshot {
         /// Snapshot filtering options.
@@ -110,7 +103,6 @@ pub enum Request {
         expression: String,
     },
 
-    // -- Interaction (target = ref `@e1` or CSS selector) ------------------
     /// Click an element.
     Click {
         /// Ref or CSS selector.
@@ -197,7 +189,6 @@ pub enum Request {
         target: Option<String>,
     },
 
-    // -- Frame (iframe) support ---------------------------------------------
     /// Switch execution context to a child frame by name, URL substring, or index.
     Frame {
         /// Frame selector: name, URL substring, or numeric index.
@@ -206,7 +197,6 @@ pub enum Request {
     /// Switch back to the main (top-level) frame.
     MainFrame,
 
-    // -- Raw keyboard ------------------------------------------------------
     /// Hold a key down (without releasing).
     KeyDown {
         /// Key name (e.g. `"Shift"`, `"a"`).
@@ -223,7 +213,6 @@ pub enum Request {
         text: String,
     },
 
-    // -- File / DOM manipulation -------------------------------------------
     /// Upload files to a file input element.
     Upload {
         /// Ref or CSS selector of the `<input type="file">`.
@@ -264,7 +253,6 @@ pub enum Request {
         path: String,
     },
 
-    // -- Network interception -----------------------------------------------
     /// Intercept requests matching a URL pattern and respond with custom data or block.
     Route {
         /// URL substring to match.
@@ -297,7 +285,6 @@ pub enum Request {
         filter: Option<String>,
     },
 
-    // -- Download handling ---------------------------------------------------
     /// Set the download directory path (enables downloads).
     SetDownloadPath {
         /// Absolute directory path for downloads.
@@ -338,7 +325,6 @@ pub enum Request {
         timeout_ms: u64,
     },
 
-    // -- Clipboard -----------------------------------------------------------
     /// Read text from the clipboard.
     ClipboardRead,
     /// Write text to the clipboard.
@@ -347,7 +333,6 @@ pub enum Request {
         text: String,
     },
 
-    // -- Environment emulation -----------------------------------------------
     /// Set the viewport size.
     Viewport {
         /// Width in pixels.
@@ -370,7 +355,6 @@ pub enum Request {
         #[serde(default)]
         forced_colors: Option<String>,
     },
-    // -- Semantic locators --------------------------------------------------
     /// Find elements by semantic locator and optionally act on them.
     Find {
         /// Locator type: `role`, `text`, `label`, `placeholder`, `testid`, `alttext`, `title`.
@@ -392,7 +376,6 @@ pub enum Request {
         fill_value: Option<String>,
     },
 
-    // -- Device / Environment emulation ------------------------------------
     /// Emulate a device preset (sets viewport + user-agent).
     Device {
         /// Device name (e.g. `iphone-14`, `pixel-7`, `ipad-pro`).
@@ -453,7 +436,6 @@ pub enum Request {
     /// Bring the current page to front.
     BringToFront,
 
-    // -- Script injection ----------------------------------------------------
     /// Add a script to evaluate on every new document (before page JS runs).
     AddInitScript {
         /// `JavaScript` source code.
@@ -488,7 +470,6 @@ pub enum Request {
         event_init: Option<String>,
     },
 
-    // -- Misc interaction / queries ------------------------------------------
     /// Get computed styles of an element.
     Styles {
         /// Ref or CSS selector.
@@ -548,7 +529,6 @@ pub enum Request {
         value: String,
     },
 
-    // -- Query -------------------------------------------------------------
     /// Get text content (whole page or scoped by target).
     GetText {
         /// Optional ref or CSS selector.
@@ -584,7 +564,6 @@ pub enum Request {
         attribute: String,
     },
 
-    // -- State checks -------------------------------------------------------
     /// Check if an element is visible.
     IsVisible {
         /// Ref or CSS selector.
@@ -625,14 +604,12 @@ pub enum Request {
         name: String,
     },
 
-    // -- Wait --------------------------------------------------------------
     /// Wait for a condition.
     Wait {
         /// What to wait for.
         condition: WaitCondition,
     },
 
-    // -- Dialog handling -----------------------------------------------------
     /// Get the current dialog message (if any).
     DialogMessage,
     /// Accept (OK) the current dialog, optionally with prompt text.
@@ -643,7 +620,6 @@ pub enum Request {
     /// Dismiss (Cancel) the current dialog.
     DialogDismiss,
 
-    // -- Cookie / Storage ---------------------------------------------------
     /// Get all cookies.
     GetCookies,
     /// Set cookies with full attribute control via CDP `Network.setCookies`.
@@ -680,7 +656,6 @@ pub enum Request {
         session: bool,
     },
 
-    // -- Tab / Window management -----------------------------------------------
     /// Open a new browser window (separate from tabs).
     WindowNew {
         /// Viewport width (default: inherit current).
@@ -708,7 +683,6 @@ pub enum Request {
         index: Option<usize>,
     },
 
-    // -- Debug -------------------------------------------------------------
     /// Get captured console messages (drains the buffer).
     Console {
         /// Clear logs without returning them.
@@ -722,7 +696,6 @@ pub enum Request {
         clear: bool,
     },
 
-    // -- Diff --------------------------------------------------------------
     /// Compare the current accessibility snapshot against a baseline text.
     DiffSnapshot {
         /// Baseline snapshot text to compare against.
@@ -755,9 +728,11 @@ pub enum Request {
         /// Per-channel pixel threshold (0–255) for screenshot diff.
         #[serde(default = "default_diff_threshold")]
         threshold: u8,
+        /// Snapshot options (interactive, compact, `max_depth`, selector).
+        #[serde(default)]
+        options: SnapshotOptions,
     },
 
-    // -- State persistence --------------------------------------------------
     /// Save current browser state (cookies + storage) to a named file.
     StateSave {
         /// State name (file will be `<name>.json` in `~/.brother/sessions/`).
@@ -793,7 +768,6 @@ pub enum Request {
         new_name: String,
     },
 
-    // -- Debug / Tracing ----------------------------------------------------
     /// Start CDP tracing (Performance, devtools.timeline, etc.).
     TraceStart {
         /// Tracing categories (comma-separated). Default: standard set.
@@ -819,7 +793,6 @@ pub enum Request {
         path: Option<String>,
     },
 
-    // -- Screencast -----------------------------------------------------------
     /// Start CDP screencast (captures screen frames as base64 images).
     ScreencastStart {
         /// Image format: `jpeg` or `png`. Default: `jpeg`.
@@ -838,7 +811,6 @@ pub enum Request {
     /// Stop CDP screencast.
     ScreencastStop,
 
-    // -- HAR recording -------------------------------------------------------
     /// Start recording HTTP traffic as HAR (HTTP Archive).
     HarStart,
     /// Stop HAR recording and save the archive.
@@ -848,23 +820,17 @@ pub enum Request {
         path: Option<String>,
     },
 
-    // -- Security -----------------------------------------------------------
     /// Set allowed domains — navigation to other domains will be blocked.
     SetAllowedDomains {
         /// List of allowed domain patterns (e.g. `["example.com", "*.github.com"]`).
         domains: Vec<String>,
     },
 
-    // -- Lifecycle ---------------------------------------------------------
     /// Check daemon health / browser status.
     Status,
     /// Close the browser and shut down the daemon.
     Close,
 }
-
-// ---------------------------------------------------------------------------
-// Route action
-// ---------------------------------------------------------------------------
 
 /// Action for network route interception.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -876,10 +842,6 @@ pub enum RouteAction {
     /// Block the request.
     Abort,
 }
-
-// ---------------------------------------------------------------------------
-// Defaults
-// ---------------------------------------------------------------------------
 
 /// Default viewport width.
 const fn default_viewport_width() -> u32 {
@@ -945,10 +907,6 @@ fn default_screencast_format() -> String {
 const fn default_screencast_quality() -> u32 {
     80
 }
-
-// ---------------------------------------------------------------------------
-// Wait
-// ---------------------------------------------------------------------------
 
 /// Strategy to wait after navigation.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -1018,10 +976,6 @@ pub enum WaitCondition {
 const fn default_timeout_ms() -> u64 {
     30_000
 }
-
-// ---------------------------------------------------------------------------
-// Response  (Daemon → CLI)
-// ---------------------------------------------------------------------------
 
 /// Response from the daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1159,10 +1113,6 @@ pub enum ResponseData {
         states: Vec<String>,
     },
 }
-
-// ---------------------------------------------------------------------------
-// Runtime directory helpers
-// ---------------------------------------------------------------------------
 
 /// Runtime directory for daemon files (`~/.brother/`).
 #[must_use]

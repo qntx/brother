@@ -735,6 +735,18 @@ pub enum DiffSub {
         /// Per-channel pixel threshold (0–255).
         #[arg(short, long, default_value = "10")]
         threshold: u8,
+        /// Only include interactive elements in diff snapshot.
+        #[arg(short, long)]
+        interactive: bool,
+        /// Compact output (skip structural containers).
+        #[arg(short, long)]
+        compact: bool,
+        /// Maximum depth for the snapshot tree.
+        #[arg(long)]
+        depth: Option<usize>,
+        /// CSS selector to scope the snapshot to a subtree.
+        #[arg(long)]
+        selector: Option<String>,
     },
 }
 

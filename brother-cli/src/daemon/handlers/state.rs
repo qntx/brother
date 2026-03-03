@@ -9,10 +9,6 @@ use crate::protocol::{Response, ResponseData};
 
 use super::super::{get_page, DaemonState};
 
-// ---------------------------------------------------------------------------
-// State persistence handlers
-// ---------------------------------------------------------------------------
-
 /// Directory for saved states: `~/.brother/sessions/`.
 fn sessions_dir() -> Option<std::path::PathBuf> {
     crate::protocol::runtime_dir().map(|d| d.join("sessions"))

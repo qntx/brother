@@ -203,10 +203,6 @@ impl SnapshotOptions {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Accessibility tree roles
-// ---------------------------------------------------------------------------
-
 /// Roles considered interactive — these always get refs.
 pub const INTERACTIVE_ROLES: &[&str] = &[
     "button",
@@ -283,10 +279,6 @@ pub fn is_structural(role: &str) -> bool {
         .iter()
         .any(|&r| r.eq_ignore_ascii_case(role))
 }
-
-// ---------------------------------------------------------------------------
-// AX tree building from CDP response
-// ---------------------------------------------------------------------------
 
 /// Build a [`Snapshot`] from the raw CDP accessibility tree nodes.
 ///

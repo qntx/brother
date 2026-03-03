@@ -33,7 +33,6 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
     }
 
     match req {
-        // -- Launch / Connection ----------------------------------------------
         Request::Launch {
             headed,
             proxy,
@@ -90,7 +89,6 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
 
         Request::Connect { target } => super::handlers::cmd_connect(state, &target).await,
 
-        // -- Navigation -------------------------------------------------------
         Request::Navigate { url, wait } => {
             super::handlers::cmd_navigate(state, &url, wait).await
         }
@@ -98,7 +96,6 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
         Request::Forward => page_ok!(state, go_forward()),
         Request::Reload => page_ok!(state, reload()),
 
-        // -- Observation ------------------------------------------------------
         Request::Snapshot { options } => super::handlers::cmd_snapshot(state, options).await,
         Request::Screenshot {
             full_page,
@@ -123,7 +120,6 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
         }
         Request::Eval { expression } => page_eval!(state, eval(&expression)),
 
-        // -- Interaction ------------------------------------------------------
         Request::Click {
             target,
             button,
@@ -207,16 +203,13 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
             page_ok!(state, &target, set_value(&target, &value))
         }
 
-        // -- Frame (iframe) ---------------------------------------------------
         Request::Frame { selector } => super::handlers::cmd_frame(state, &selector).await,
         Request::MainFrame => super::handlers::cmd_main_frame(state).await,
 
-        // -- Raw keyboard -----------------------------------------------------
         Request::KeyDown { key } => page_ok!(state, key_down(&key)),
         Request::KeyUp { key } => page_ok!(state, key_up(&key)),
         Request::InsertText { text } => page_ok!(state, insert_text(&text)),
 
-        // -- File / DOM -------------------------------------------------------
         Request::Upload { target, files } => page_ok!(state, &target, upload(&target, &files)),
         Request::Drag { source, target } => page_ok!(state, &source, drag(&source, &target)),
         Request::Clear { target } => page_ok!(state, &target, clear(&target)),
@@ -241,7 +234,6 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
         Request::SetContent { html } => page_ok!(state, set_content(&html)),
         Request::Pdf { path } => page_ok!(state, pdf(&path)),
 
-        // -- Network interception ---------------------------------------------
         Request::Route {
             pattern,
             action,
@@ -254,7 +246,6 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
             super::handlers::cmd_requests(state, action.as_deref(), filter.as_deref()).await
         }
 
-        // -- Download ---------------------------------------------------------
         Request::SetDownloadPath { path } => {
             super::handlers::cmd_set_download_path(state, &path).await
         }
@@ -275,11 +266,9 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
             super::handlers::cmd_response_body(state, &url, timeout_ms).await
         }
 
-        // -- Clipboard --------------------------------------------------------
         Request::ClipboardRead => page_text!(state, clipboard_read()),
         Request::ClipboardWrite { text } => page_ok!(state, clipboard_write(&text)),
 
-        // -- Semantic locators -------------------------------------------------
         Request::Find {
             by,
             value,
@@ -325,7 +314,6 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
             }
         }
 
-        // -- Nth / Expose ------------------------------------------------------
         Request::Nth {
             selector,
             index,
@@ -364,7 +352,6 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
             }
         }
 
-        // -- Environment emulation --------------------------------------------
         Request::DeviceList => {
             let names = brother::DevicePreset::list_names();
             let descriptions: Vec<serde_json::Value> = names
@@ -455,7 +442,6 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
         }
         Request::BringToFront => page_ok!(state, bring_to_front()),
 
-        // -- Script injection -------------------------------------------------
         Request::AddInitScript { script } => page_ok!(state, add_init_script(&script)),
         Request::AddScript { content, url } => {
             page_ok!(state, add_script(content.as_deref(), url.as_deref()))
@@ -474,7 +460,6 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
             )
         }
 
-        // -- Misc interaction / queries ---------------------------------------
         Request::Styles { target } => page_eval!(state, get_styles(&target)),
         Request::SelectAll { target } => page_ok!(state, select_all_text(&target)),
         Request::Highlight { target } => page_ok!(state, &target, highlight(&target)),
@@ -490,7 +475,6 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
         }
         Request::Tap { target } => page_ok!(state, &target, tap(&target)),
 
-        // -- Query ------------------------------------------------------------
         Request::GetText { target } => page_text!(state, get_text(target.as_deref())),
         Request::GetInnerText { target } => {
             page_text!(state, &target, get_inner_text(&target))
@@ -504,7 +488,6 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
             page_text!(state, &target, get_attribute(&target, &attribute))
         }
 
-        // -- State checks -----------------------------------------------------
         Request::IsVisible { target } => {
             let page = match get_page(state).await {
                 Ok(p) => p,
@@ -554,10 +537,8 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
             }
         }
 
-        // -- Wait -------------------------------------------------------------
         Request::Wait { condition } => super::handlers::cmd_wait(state, condition).await,
 
-        // -- Dialog -----------------------------------------------------------
         Request::DialogMessage => {
             let page = match get_page(state).await {
                 Ok(p) => p,
@@ -580,7 +561,6 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
         }
         Request::DialogDismiss => page_ok!(state, dialog_dismiss()),
 
-        // -- Cookie / Storage -------------------------------------------------
         Request::GetCookies => page_eval!(state, get_cookies()),
         Request::SetCookies { cookies } => page_ok!(state, set_cookies(&cookies)),
         Request::SetCookie { cookie } => page_ok!(state, set_cookie(&cookie)),
@@ -595,13 +575,11 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
         }
         Request::ClearStorage { session } => page_ok!(state, clear_storage(session)),
 
-        // -- Tab management ---------------------------------------------------
         Request::TabNew { url } => super::handlers::cmd_tab_new(state, url.as_deref()).await,
         Request::TabList => super::handlers::cmd_tab_list(state).await,
         Request::TabSelect { index } => super::handlers::cmd_tab_select(state, index).await,
         Request::TabClose { index } => super::handlers::cmd_tab_close(state, index).await,
 
-        // -- Debug ------------------------------------------------------------
         Request::Console { clear } => {
             let page = match get_page(state).await {
                 Ok(p) => p,
@@ -633,7 +611,6 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
             })
         }
 
-        // -- Diff -------------------------------------------------------------
         Request::DiffSnapshot { baseline, options } => {
             super::handlers::cmd_diff_snapshot(state, &baseline, options).await
         }
@@ -648,9 +625,12 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
             url_b,
             screenshot,
             threshold,
-        } => super::handlers::cmd_diff_url(state, &url_a, &url_b, screenshot, threshold).await,
+            options,
+        } => {
+            super::handlers::cmd_diff_url(state, &url_a, &url_b, screenshot, threshold, options)
+                .await
+        }
 
-        // -- State persistence ------------------------------------------------
         Request::StateSave { name } => super::handlers::cmd_state_save(state, &name).await,
         Request::StateLoad { name } => super::handlers::cmd_state_load(state, &name).await,
         Request::StateList => super::handlers::cmd_state_list().await,
@@ -661,7 +641,6 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
             super::handlers::cmd_state_rename(&old_name, &new_name).await
         }
 
-        // -- Debug / Tracing --------------------------------------------------
         Request::TraceStart { categories } => {
             super::handlers::cmd_trace_start(state, &categories).await
         }
@@ -675,7 +654,6 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
             super::handlers::cmd_profiler_stop(state, path.as_deref()).await
         }
 
-        // -- Screencast -------------------------------------------------------
         Request::ScreencastStart {
             format,
             quality,
@@ -721,18 +699,15 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
             }
         }
 
-        // -- HAR recording ----------------------------------------------------
         Request::HarStart => super::handlers::cmd_har_start(state).await,
         Request::HarStop { path } => {
             super::handlers::cmd_har_stop(state, path.as_deref()).await
         }
 
-        // -- Security ---------------------------------------------------------
         Request::SetAllowedDomains { domains } => {
             super::handlers::cmd_set_allowed_domains(state, domains).await
         }
 
-        // -- Lifecycle --------------------------------------------------------
         Request::Status => {
             let guard = state.lock().await;
             let browser_running = guard.browser.is_some();

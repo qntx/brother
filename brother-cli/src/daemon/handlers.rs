@@ -30,10 +30,6 @@ use crate::protocol::{Response, ResponseData, RouteAction, WaitCondition, WaitSt
 
 use super::{ensure_browser, get_page, DaemonState, InterceptRoute};
 
-// ---------------------------------------------------------------------------
-// Navigation
-// ---------------------------------------------------------------------------
-
 pub(super) async fn cmd_navigate(
     state: &Arc<Mutex<DaemonState>>,
     url: &str,
@@ -66,10 +62,6 @@ pub(super) async fn cmd_navigate(
     Response::ok_data(ResponseData::Navigate { url: u, title: t })
 }
 
-// ---------------------------------------------------------------------------
-// Snapshot
-// ---------------------------------------------------------------------------
-
 pub(super) async fn cmd_snapshot(
     state: &Arc<Mutex<DaemonState>>,
     options: brother::SnapshotOptions,
@@ -89,10 +81,6 @@ pub(super) async fn cmd_snapshot(
         Err(e) => Response::error(format!("snapshot failed: {e}")),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Wait
-// ---------------------------------------------------------------------------
 
 pub(super) async fn cmd_wait(
     state: &Arc<Mutex<DaemonState>>,
@@ -148,10 +136,6 @@ pub(super) async fn cmd_wait(
         Err(e) => Response::error(e.to_string()),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Connection
-// ---------------------------------------------------------------------------
 
 /// Connect to an existing browser via CDP websocket URL or debugging port.
 pub(super) async fn cmd_connect(state: &Arc<Mutex<DaemonState>>, target: &str) -> Response {
@@ -220,10 +204,6 @@ async fn resolve_cdp_endpoint(target: &str) -> brother::Result<String> {
             Error::Browser("webSocketDebuggerUrl not found in /json/version response".into())
         })
 }
-
-// ---------------------------------------------------------------------------
-// Frame (iframe)
-// ---------------------------------------------------------------------------
 
 /// Switch execution context to a child frame.
 pub(super) async fn cmd_frame(state: &Arc<Mutex<DaemonState>>, selector: &str) -> Response {
@@ -299,10 +279,6 @@ pub(super) async fn cmd_main_frame(state: &Arc<Mutex<DaemonState>>) -> Response 
         })
     }
 }
-
-// ---------------------------------------------------------------------------
-// Network interception
-// ---------------------------------------------------------------------------
 
 /// Add a network interception route.
 pub(super) async fn cmd_route(
@@ -485,10 +461,6 @@ pub(super) async fn cmd_requests(
         entries: serde_json::Value::Array(entries),
     })
 }
-
-// ---------------------------------------------------------------------------
-// Download handlers
-// ---------------------------------------------------------------------------
 
 /// Set download directory via CDP and store path in `DaemonState`.
 pub(super) async fn cmd_set_download_path(
@@ -754,10 +726,6 @@ pub(super) async fn cmd_response_body(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tab / Window management
-// ---------------------------------------------------------------------------
-
 pub(super) async fn cmd_window_new(
     state: &Arc<Mutex<DaemonState>>,
     width: Option<u32>,
@@ -867,10 +835,6 @@ pub(super) async fn cmd_tab_close(
 }
 // Diff, State, and Trace/Profiler handlers are in submodules:
 // see `diff.rs`, `state.rs`, `trace.rs` in the `handlers/` directory.
-
-// ---------------------------------------------------------------------------
-// HAR recording
-// ---------------------------------------------------------------------------
 
 pub(super) async fn cmd_har_start(state: &Arc<Mutex<DaemonState>>) -> Response {
     let page = match get_page(state).await {

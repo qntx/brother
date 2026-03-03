@@ -8,10 +8,6 @@ use crate::protocol::{Response, ResponseData};
 
 use super::super::{get_page, DaemonState};
 
-// ---------------------------------------------------------------------------
-// Diff handlers
-// ---------------------------------------------------------------------------
-
 /// Compare current snapshot against baseline text.
 pub(in crate::daemon) async fn cmd_diff_snapshot(
     state: &Arc<Mutex<DaemonState>>,
@@ -47,6 +43,7 @@ pub(in crate::daemon) async fn cmd_diff_url(
     url_b: &str,
     screenshot: bool,
     threshold: u8,
+    options: brother::SnapshotOptions,
 ) -> Response {
     let page = match get_page(state).await {
         Ok(p) => p,
@@ -57,7 +54,7 @@ pub(in crate::daemon) async fn cmd_diff_url(
     if let Err(e) = page.goto(url_a).await {
         return Response::error(format!("navigate to URL A: {e}"));
     }
-    let snap_a = match page.snapshot().await {
+    let snap_a = match page.snapshot_with(options.clone()).await {
         Ok(s) => s.tree().to_owned(),
         Err(e) => return Response::error(format!("snapshot A: {e}")),
     };
@@ -74,7 +71,7 @@ pub(in crate::daemon) async fn cmd_diff_url(
     if let Err(e) = page.goto(url_b).await {
         return Response::error(format!("navigate to URL B: {e}"));
     }
-    let snap_b = match page.snapshot().await {
+    let snap_b = match page.snapshot_with(options).await {
         Ok(s) => s.tree().to_owned(),
         Err(e) => return Response::error(format!("snapshot B: {e}")),
     };
@@ -195,10 +192,6 @@ pub(in crate::daemon) async fn cmd_diff_screenshot(
         summary: result.summary(),
     })
 }
-
-// ---------------------------------------------------------------------------
-// PNG utilities
-// ---------------------------------------------------------------------------
 
 /// Decoded RGBA image data.
 struct RgbaImage {

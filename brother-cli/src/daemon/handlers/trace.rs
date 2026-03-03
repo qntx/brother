@@ -9,10 +9,6 @@ use crate::protocol::{Response, ResponseData};
 
 use super::super::{get_page, DaemonState};
 
-// ---------------------------------------------------------------------------
-// Tracing / Profiler handlers (real CDP protocol)
-// ---------------------------------------------------------------------------
-
 /// Default tracing categories when none are specified.
 const DEFAULT_TRACE_CATEGORIES: &[&str] = &[
     "devtools.timeline",
@@ -182,10 +178,6 @@ pub(in crate::daemon) async fn cmd_profiler_stop(
         Response::ok_data(ResponseData::Eval { value: parsed })
     }
 }
-
-// ---------------------------------------------------------------------------
-// Domain filter handler
-// ---------------------------------------------------------------------------
 
 /// Set allowed domain patterns for navigation security.
 ///

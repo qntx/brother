@@ -419,12 +419,26 @@ pub fn build_request(cmd: &Command) -> Request {
                 url_b,
                 screenshot,
                 threshold,
-            } => Request::DiffUrl {
-                url_a: url_a.clone(),
-                url_b: url_b.clone(),
-                screenshot: *screenshot,
-                threshold: *threshold,
-            },
+                interactive,
+                compact,
+                depth,
+                selector,
+            } => {
+                let mut opts = brother::SnapshotOptions::default()
+                    .interactive_only(*interactive)
+                    .compact(*compact)
+                    .max_depth(depth.unwrap_or(0));
+                if let Some(sel) = selector {
+                    opts = opts.selector(sel.clone());
+                }
+                Request::DiffUrl {
+                    url_a: url_a.clone(),
+                    url_b: url_b.clone(),
+                    screenshot: *screenshot,
+                    threshold: *threshold,
+                    options: opts,
+                }
+            }
         },
         Command::State(sub) => match sub {
             crate::commands::StateSub::Save { name } => Request::StateSave { name: name.clone() },
