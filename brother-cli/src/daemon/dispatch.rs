@@ -7,7 +7,7 @@ use tokio::sync::Mutex;
 
 use crate::protocol::{Request, Response, ResponseData};
 
-use super::{get_page, page_eval, page_ok, page_text, DaemonState};
+use super::{get_page, page_display, page_eval, page_ok, page_text, DaemonState};
 
 #[allow(
     clippy::cognitive_complexity,
@@ -488,54 +488,10 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
             page_text!(state, &target, get_attribute(&target, &attribute))
         }
 
-        Request::IsVisible { target } => {
-            let page = match get_page(state).await {
-                Ok(p) => p,
-                Err(r) => return r,
-            };
-            match page.is_visible(&target).await {
-                Ok(val) => Response::ok_data(ResponseData::Text {
-                    text: val.to_string(),
-                }),
-                Err(e) => Response::error(e.ai_friendly(&target).to_string()),
-            }
-        }
-        Request::IsEnabled { target } => {
-            let page = match get_page(state).await {
-                Ok(p) => p,
-                Err(r) => return r,
-            };
-            match page.is_enabled(&target).await {
-                Ok(val) => Response::ok_data(ResponseData::Text {
-                    text: val.to_string(),
-                }),
-                Err(e) => Response::error(e.ai_friendly(&target).to_string()),
-            }
-        }
-        Request::IsChecked { target } => {
-            let page = match get_page(state).await {
-                Ok(p) => p,
-                Err(r) => return r,
-            };
-            match page.is_checked(&target).await {
-                Ok(val) => Response::ok_data(ResponseData::Text {
-                    text: val.to_string(),
-                }),
-                Err(e) => Response::error(e.ai_friendly(&target).to_string()),
-            }
-        }
-        Request::Count { selector } => {
-            let page = match get_page(state).await {
-                Ok(p) => p,
-                Err(r) => return r,
-            };
-            match page.count(&selector).await {
-                Ok(n) => Response::ok_data(ResponseData::Text {
-                    text: n.to_string(),
-                }),
-                Err(e) => Response::error(e.ai_friendly(&selector).to_string()),
-            }
-        }
+        Request::IsVisible { target } => page_display!(state, &target, is_visible(&target)),
+        Request::IsEnabled { target } => page_display!(state, &target, is_enabled(&target)),
+        Request::IsChecked { target } => page_display!(state, &target, is_checked(&target)),
+        Request::Count { selector } => page_display!(state, &selector, count(&selector)),
 
         Request::Wait { condition } => super::handlers::cmd_wait(state, condition).await,
 

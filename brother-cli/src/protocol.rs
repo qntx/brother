@@ -843,70 +843,20 @@ pub enum RouteAction {
     Abort,
 }
 
-/// Default viewport width.
-const fn default_viewport_width() -> u32 {
-    1280
-}
-
-/// Default viewport height.
-const fn default_viewport_height() -> u32 {
-    720
-}
-
-/// Default pixel diff threshold.
-const fn default_diff_threshold() -> u8 {
-    10
-}
-
-/// Default scroll distance in pixels.
-const fn default_scroll_px() -> i64 {
-    500
-}
-
-/// Default HTTP status for route fulfill.
-const fn default_status() -> u16 {
-    200
-}
-
-/// Default content type for route fulfill.
-fn default_content_type() -> String {
-    "text/plain".into()
-}
-
-/// Default geolocation accuracy in meters.
-const fn default_geo_accuracy() -> f64 {
-    1.0
-}
-
-/// Default boolean true.
-const fn default_true() -> bool {
-    true
-}
-
-/// Default click count.
-const fn default_click_count() -> u32 {
-    1
-}
-
-/// Default screenshot format.
-fn default_screenshot_format() -> String {
-    "png".into()
-}
-
-/// Default JPEG quality.
-const fn default_jpeg_quality() -> u8 {
-    80
-}
-
-/// Default screencast format.
-fn default_screencast_format() -> String {
-    "jpeg".into()
-}
-
-/// Default screencast quality.
-const fn default_screencast_quality() -> u32 {
-    80
-}
+// Serde default-value helpers (grouped to reduce boilerplate).
+const fn default_viewport_width() -> u32 { 1280 }
+const fn default_viewport_height() -> u32 { 720 }
+const fn default_diff_threshold() -> u8 { 10 }
+const fn default_scroll_px() -> i64 { 500 }
+const fn default_status() -> u16 { 200 }
+fn default_content_type() -> String { "text/plain".into() }
+const fn default_geo_accuracy() -> f64 { 1.0 }
+const fn default_true() -> bool { true }
+const fn default_click_count() -> u32 { 1 }
+fn default_screenshot_format() -> String { "png".into() }
+const fn default_jpeg_quality() -> u8 { 80 }
+fn default_screencast_format() -> String { "jpeg".into() }
+const fn default_screencast_quality() -> u32 { 80 }
 
 /// Strategy to wait after navigation.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]

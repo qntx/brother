@@ -9,10 +9,6 @@ use super::Page;
 
 impl Page {
     /// Set the viewport size via CDP `Emulation.setDeviceMetricsOverride`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the CDP command fails.
     pub async fn set_viewport(&self, width: u32, height: u32) -> Result<()> {
         use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
         let params =
@@ -22,10 +18,6 @@ impl Page {
     }
 
     /// Emulate media features (color scheme, print/screen, reduced motion, etc.).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the CDP command fails.
     pub async fn emulate_media(
         &self,
         media: Option<&str>,
@@ -57,14 +49,7 @@ impl Page {
         Ok(())
     }
 
-    /// Toggle offline mode via CDP `Network.emulateNetworkConditions`.
-    ///
-    /// This intercepts **all** network activity (fetch, XHR, WebSocket,
-    /// images, scripts, etc.) at the protocol level.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the CDP command fails.
+    /// Toggle offline mode (intercepts all network at protocol level).
     #[allow(deprecated)] // chromiumoxide marks it experimental, but the CDP method works fine
     pub async fn set_offline(&self, offline: bool) -> Result<()> {
         use chromiumoxide::cdp::browser_protocol::network::EmulateNetworkConditionsParams;
@@ -74,10 +59,6 @@ impl Page {
     }
 
     /// Set extra HTTP headers via CDP `Network.setExtraHTTPHeaders`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the CDP command fails.
     pub async fn set_extra_headers(
         &self,
         headers: serde_json::Map<String, serde_json::Value>,
@@ -88,11 +69,7 @@ impl Page {
         Ok(())
     }
 
-    /// Override geolocation via CDP `Emulation.setGeolocationOverride`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the CDP command fails.
+    /// Override geolocation.
     pub async fn set_geolocation(
         &self,
         latitude: f64,
@@ -110,11 +87,7 @@ impl Page {
         Ok(())
     }
 
-    /// Set HTTP Basic Auth credentials via CDP extra headers.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the CDP command fails.
+    /// Set HTTP Basic Auth credentials via extra headers.
     pub async fn set_credentials(&self, username: &str, password: &str) -> Result<()> {
         let encoded =
             base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"));
@@ -126,11 +99,7 @@ impl Page {
         self.set_extra_headers(map).await
     }
 
-    /// Override the browser user-agent string via CDP `Network.setUserAgentOverride`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the CDP command fails.
+    /// Override the browser user-agent string.
     pub async fn set_user_agent(&self, user_agent: &str) -> Result<()> {
         use chromiumoxide::cdp::browser_protocol::network::SetUserAgentOverrideParams;
         let params = SetUserAgentOverrideParams::new(user_agent.to_owned());
@@ -138,11 +107,7 @@ impl Page {
         Ok(())
     }
 
-    /// Override the timezone via CDP `Emulation.setTimezoneOverride`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the CDP command fails.
+    /// Override the timezone.
     pub async fn set_timezone(&self, timezone_id: &str) -> Result<()> {
         use chromiumoxide::cdp::browser_protocol::emulation::SetTimezoneOverrideParams;
         let params = SetTimezoneOverrideParams::new(timezone_id.to_owned());
@@ -150,12 +115,7 @@ impl Page {
         Ok(())
     }
 
-    /// Override the locale via CDP `Network.setUserAgentOverride` (accept-language)
-    /// and JS `navigator.language/languages` override.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the CDP command or JS evaluation fails.
+    /// Override the locale (accept-language + `navigator.language`).
     pub async fn set_locale(&self, locale: &str) -> Result<()> {
         use chromiumoxide::cdp::browser_protocol::network::SetUserAgentOverrideParams;
         // Set accept-language at the protocol level (affects HTTP headers).
@@ -182,11 +142,7 @@ impl Page {
         Ok(())
     }
 
-    /// Grant or revoke browser permissions via CDP `Browser.setPermission`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any permission grant/deny fails.
+    /// Grant or revoke browser permissions.
     pub async fn set_permissions(&self, permissions: &[String], grant: bool) -> Result<()> {
         use chromiumoxide::cdp::browser_protocol::browser::{
             PermissionDescriptor, PermissionSetting, SetPermissionParams,
@@ -204,11 +160,7 @@ impl Page {
         Ok(())
     }
 
-    /// Bring the page to front via CDP `Page.bringToFront`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the CDP command fails.
+    /// Bring the page to front.
     pub async fn bring_to_front(&self) -> Result<()> {
         use chromiumoxide::cdp::browser_protocol::page::BringToFrontParams;
         self.inner
@@ -219,10 +171,6 @@ impl Page {
     }
 
     /// Set download behavior via CDP `Browser.setDownloadBehavior`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the CDP command fails.
     pub async fn set_download_behavior(&self, path: &str) -> Result<()> {
         use chromiumoxide::cdp::browser_protocol::browser::{
             SetDownloadBehaviorBehavior, SetDownloadBehaviorParams,
@@ -230,6 +178,85 @@ impl Page {
         let mut params = SetDownloadBehaviorParams::new(SetDownloadBehaviorBehavior::AllowAndName);
         params.download_path = Some(path.to_owned());
         self.inner.execute(params).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    // -- Script & style injection, DOM event dispatch --
+
+    /// Add a script to evaluate on every new document (before page JS).
+    pub async fn add_init_script(&self, script: &str) -> Result<()> {
+        use chromiumoxide::cdp::browser_protocol::page::AddScriptToEvaluateOnNewDocumentParams;
+        let params = AddScriptToEvaluateOnNewDocumentParams::new(script.to_owned());
+        self.inner.execute(params).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Inject a `<script>` tag into the current page.
+    pub async fn add_script(&self, content: Option<&str>, url: Option<&str>) -> Result<()> {
+        let js = match (content, url) {
+            (Some(c), _) => {
+                let escaped = c
+                    .replace('\\', "\\\\")
+                    .replace('`', "\\`")
+                    .replace('$', "\\$");
+                format!(
+                    r"(() => {{ const s = document.createElement('script'); s.textContent = `{escaped}`; document.head.appendChild(s); }})()"
+                )
+            }
+            (_, Some(u)) => {
+                let escaped = u.replace('\\', "\\\\").replace('\'', "\\'");
+                format!(
+                    r"(() => {{ const s = document.createElement('script'); s.src = '{escaped}'; document.head.appendChild(s); }})()"
+                )
+            }
+            _ => return Err(Error::Browser("either content or url is required".into())),
+        };
+        self.eval(&js).await?;
+        Ok(())
+    }
+
+    /// Inject a `<style>` or `<link>` tag into the current page.
+    pub async fn add_style(&self, content: Option<&str>, url: Option<&str>) -> Result<()> {
+        let js = match (content, url) {
+            (Some(c), _) => {
+                let escaped = c
+                    .replace('\\', "\\\\")
+                    .replace('`', "\\`")
+                    .replace('$', "\\$");
+                format!(
+                    r"(() => {{ const s = document.createElement('style'); s.textContent = `{escaped}`; document.head.appendChild(s); }})()"
+                )
+            }
+            (_, Some(u)) => {
+                let escaped = u.replace('\\', "\\\\").replace('\'', "\\'");
+                format!(
+                    r"(() => {{ const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = '{escaped}'; document.head.appendChild(l); }})()"
+                )
+            }
+            _ => return Err(Error::Browser("either content or url is required".into())),
+        };
+        self.eval(&js).await?;
+        Ok(())
+    }
+
+    /// Dispatch a DOM event on an element.
+    pub async fn dispatch_event(
+        &self,
+        target: &str,
+        event: &str,
+        event_init: Option<&str>,
+    ) -> Result<()> {
+        let escaped_event = event.replace('\\', "\\\\").replace('\'', "\\'");
+        let init_arg = event_init.map_or_else(|| "{}".to_owned(), ToOwned::to_owned);
+        let escaped_sel = target.replace('\\', "\\\\").replace('\'', "\\'");
+        let js = format!(
+            r"(() => {{
+                const el = document.querySelector('{escaped_sel}');
+                if (!el) throw new Error('element not found: {escaped_sel}');
+                el.dispatchEvent(new Event('{escaped_event}', {init_arg}));
+            }})()"
+        );
+        self.eval(&js).await?;
         Ok(())
     }
 }

@@ -4,22 +4,14 @@
 //! - A ref from a prior snapshot: `"@e1"`, `"e1"`, or `"ref=e1"`
 //! - A CSS selector: `"#submit"`, `".btn-primary"`
 
-mod clipboard;
 mod cookie_storage;
-mod dialog;
-mod dom;
 mod emulation;
 mod find;
-mod input;
 mod interaction;
-mod javascript;
-mod log;
 mod navigation;
 mod query;
 mod screenshot;
-mod script;
 mod snapshot_cmd;
-mod wait;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -599,5 +591,65 @@ impl Page {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+    }
+
+    // -- Console & error log capture --
+
+    /// Return all captured console messages and clear the buffer.
+    pub async fn take_console_logs(&self) -> Vec<ConsoleEntry> {
+        std::mem::take(&mut *self.console_logs.lock().await)
+    }
+
+    /// Return all captured JS errors and clear the buffer.
+    pub async fn take_js_errors(&self) -> Vec<JsError> {
+        std::mem::take(&mut *self.js_errors.lock().await)
+    }
+
+    // -- JavaScript evaluation --
+
+    /// Evaluate a `JavaScript` expression and return the raw result.
+    pub async fn eval(&self, expression: &str) -> Result<serde_json::Value> {
+        let result = self.inner.evaluate(expression).await.map_err(Error::Cdp)?;
+        Ok(result
+            .into_value::<serde_json::Value>()
+            .unwrap_or(serde_json::Value::Null))
+    }
+
+    /// Evaluate JS and deserialize the result.
+    pub async fn eval_as<T: serde::de::DeserializeOwned>(&self, expression: &str) -> Result<T> {
+        let result = self.inner.evaluate(expression).await.map_err(Error::Cdp)?;
+        result
+            .into_value()
+            .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e.to_string())))
+    }
+
+    // -- Dialog handling --
+
+    /// Get the most recent dialog info (if a dialog is open).
+    pub async fn dialog_message(&self) -> Option<DialogInfo> {
+        self.dialog.lock().await.clone()
+    }
+
+    /// Accept (OK) the current `JavaScript` dialog, optionally providing prompt text.
+    pub async fn dialog_accept(&self, prompt_text: Option<&str>) -> Result<()> {
+        use chromiumoxide::cdp::browser_protocol::page::HandleJavaScriptDialogParams;
+        let mut params = HandleJavaScriptDialogParams::new(true);
+        if let Some(text) = prompt_text {
+            params.prompt_text = Some(text.to_owned());
+        }
+        self.inner.execute(params).await.map_err(Error::Cdp)?;
+        *self.dialog.lock().await = None;
+        Ok(())
+    }
+
+    /// Dismiss (Cancel) the current `JavaScript` dialog.
+    pub async fn dialog_dismiss(&self) -> Result<()> {
+        use chromiumoxide::cdp::browser_protocol::page::HandleJavaScriptDialogParams;
+        self.inner
+            .execute(HandleJavaScriptDialogParams::new(false))
+            .await
+            .map_err(Error::Cdp)?;
+        *self.dialog.lock().await = None;
+        Ok(())
     }
 }

@@ -257,7 +257,22 @@ macro_rules! page_text {
     }};
 }
 
+/// Execute a page method returning `Result<impl ToString>` with a target → `ResponseData::Text`.
+macro_rules! page_display {
+    ($state:expr, $target:expr, $($call:tt)*) => {{
+        let page = match get_page($state).await {
+            Ok(p) => p,
+            Err(r) => return r,
+        };
+        match page.$($call)*.await {
+            Ok(val) => Response::ok_data(ResponseData::Text { text: val.to_string() }),
+            Err(e) => Response::error(e.ai_friendly($target).to_string()),
+        }
+    }};
+}
+
 // Make macros available to submodules
+pub(crate) use page_display;
 pub(crate) use page_eval;
 pub(crate) use page_ok;
 pub(crate) use page_text;

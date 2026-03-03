@@ -10,10 +10,6 @@ use super::Page;
 
 impl Page {
     /// Capture a PNG screenshot of the viewport.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the CDP screenshot command fails.
     pub async fn screenshot_png(&self) -> Result<Vec<u8>> {
         self.inner
             .screenshot(
@@ -26,10 +22,6 @@ impl Page {
     }
 
     /// Capture a JPEG screenshot.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the CDP screenshot command fails.
     pub async fn screenshot_jpeg(&self, quality: u8) -> Result<Vec<u8>> {
         self.inner
             .screenshot(
@@ -43,10 +35,6 @@ impl Page {
     }
 
     /// Capture a screenshot with full options (format, quality, selector, full page).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the CDP command fails.
     pub async fn screenshot(
         &self,
         full_page: bool,

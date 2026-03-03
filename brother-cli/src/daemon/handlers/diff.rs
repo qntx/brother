@@ -204,7 +204,7 @@ struct RgbaImage {
 fn decode_png_to_rgba(data: &[u8]) -> Result<RgbaImage, String> {
     let decoder = png::Decoder::new(std::io::Cursor::new(data));
     let mut reader = decoder.read_info().map_err(|e| format!("png header: {e}"))?;
-    let mut buf = vec![0u8; reader.output_buffer_size()];
+    let mut buf = vec![0u8; reader.output_buffer_size().unwrap_or(0)];
     let info = reader
         .next_frame(&mut buf)
         .map_err(|e| format!("png frame: {e}"))?;
