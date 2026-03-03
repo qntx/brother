@@ -493,8 +493,7 @@ impl Page {
             .execute(GetNavigationHistoryParams::default())
             .await
             .map_err(Error::Cdp)?;
-        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-        let idx = r.result.current_index as usize;
+        let idx = usize::try_from(r.result.current_index).unwrap_or(0);
         Ok(idx)
     }
 

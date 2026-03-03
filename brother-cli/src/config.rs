@@ -32,6 +32,8 @@ pub struct Config {
     pub download_path: Option<String>,
     /// Named session for daemon isolation.
     pub session: Option<String>,
+    /// Path to action policy JSON file.
+    pub policy_file: Option<String>,
 }
 
 /// Load configuration from file + environment variables.
@@ -93,6 +95,9 @@ fn apply_env(config: &mut Config) {
     }
     if let Ok(val) = std::env::var("BROTHER_SESSION") {
         config.session = Some(val);
+    }
+    if let Ok(val) = std::env::var("BROTHER_POLICY_FILE") {
+        config.policy_file = Some(val);
     }
 }
 

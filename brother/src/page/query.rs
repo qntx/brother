@@ -100,8 +100,7 @@ impl Page {
         let val = self
             .eval(&format!("document.querySelectorAll('{escaped}').length"))
             .await?;
-        #[allow(clippy::cast_possible_truncation)]
-        Ok(val.as_u64().unwrap_or(0) as usize)
+        Ok(usize::try_from(val.as_u64().unwrap_or(0)).unwrap_or(0))
     }
 
     /// Get computed styles of an element as a JSON value.

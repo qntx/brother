@@ -28,7 +28,7 @@ use tokio::sync::Mutex;
 
 use crate::protocol::{Response, ResponseData, RouteAction, WaitCondition, WaitStrategy};
 
-use super::{ensure_browser, get_page, DaemonState, InterceptRoute};
+use super::{ensure_browser, get_page, DaemonState};
 
 pub(super) async fn cmd_navigate(
     state: &Arc<Mutex<DaemonState>>,
@@ -294,13 +294,7 @@ pub(super) async fn cmd_route(
         Err(r) => return r,
     };
 
-    state.lock().await.routes.push(InterceptRoute {
-        pattern: pattern.clone(),
-        action,
-        status,
-        body: body.clone(),
-        content_type: content_type.clone(),
-    });
+    state.lock().await.routes.push(pattern.clone());
 
     let js = if matches!(action, RouteAction::Abort) {
         format!(
@@ -366,7 +360,7 @@ pub(super) async fn cmd_unroute(state: &Arc<Mutex<DaemonState>>, pattern: &str) 
     if pattern == "*" {
         guard.routes.clear();
     } else {
-        guard.routes.retain(|r| r.pattern != pattern);
+        guard.routes.retain(|r| r != pattern);
     }
     let removed = before - guard.routes.len();
     drop(guard);

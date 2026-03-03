@@ -20,7 +20,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
-use crate::protocol::{Request, Response, RouteAction};
+use crate::protocol::{Request, Response};
 
 /// Default idle timeout before auto-shutdown.
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_mins(5);
@@ -36,8 +36,8 @@ struct DaemonState {
     active_tab: usize,
     /// Currently active frame (None = main frame).
     active_frame_id: Option<String>,
-    /// Network interception rules: pattern → (action, status, body, `content_type`).
-    routes: Vec<InterceptRoute>,
+    /// Active network interception patterns.
+    routes: Vec<String>,
     /// Captured network requests (from JS interception).
     captured_requests: Vec<serde_json::Value>,
     /// Download directory path.
@@ -55,22 +55,16 @@ struct DaemonState {
     har_entries: Option<Vec<serde_json::Value>>,
 }
 
-/// A network interception rule.
-#[allow(dead_code)]
-struct InterceptRoute {
-    pattern: String,
-    action: RouteAction,
-    status: u16,
-    body: String,
-    content_type: String,
-}
-
 /// Run the daemon server for a named session.
 ///
 /// # Errors
 ///
 /// Returns an error if binding or port-file I/O fails.
-pub async fn run_session(session: &str, idle_timeout: Option<Duration>) -> brother::Result<()> {
+pub async fn run_session(
+    session: &str,
+    idle_timeout: Option<Duration>,
+    policy_file: Option<&str>,
+) -> brother::Result<()> {
     let timeout = idle_timeout.unwrap_or(DEFAULT_IDLE_TIMEOUT);
     let session_name = session.to_owned();
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -98,7 +92,18 @@ pub async fn run_session(session: &str, idle_timeout: Option<Duration>) -> broth
         last_activity: tokio::time::Instant::now(),
         allowed_domains: Vec::new(),
         pending_color_scheme: None,
-        policy_cache: None,
+        policy_cache: policy_file.and_then(|path| {
+            match policy::load_policy_file(path) {
+                Ok(p) => {
+                    tracing::info!(path, "loaded action policy");
+                    Some(policy::PolicyCache::new(path.to_owned(), p))
+                }
+                Err(e) => {
+                    tracing::warn!(path, %e, "failed to load policy file");
+                    None
+                }
+            }
+        }),
         har_entries: None,
     }));
 

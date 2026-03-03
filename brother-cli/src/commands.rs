@@ -244,16 +244,8 @@ pub enum Command {
         timeout: u64,
     },
     /// Query element state: visible, enabled, checked, or count elements.
-    #[command(name = "query")]
-    StateCheck {
-        /// What to check: `visible`, `enabled`, `checked`, `count`.
-        what: String,
-        /// Ref or CSS selector.
-        target: String,
-    },
-    /// Check element state (alias for `query`): visible, enabled, checked, count.
-    #[command(name = "is")]
-    Is {
+    #[command(name = "query", visible_alias = "is")]
+    Query {
         /// What to check: `visible`, `enabled`, `checked`, `count`.
         what: String,
         /// Ref or CSS selector.
@@ -402,13 +394,9 @@ pub enum Command {
         /// Ref or CSS selector.
         target: String,
     },
-    /// Move the mouse to absolute coordinates.
-    MouseMove {
-        /// X coordinate.
-        x: f64,
-        /// Y coordinate.
-        y: f64,
-    },
+    /// Low-level mouse control: move, down, up.
+    #[command(subcommand)]
+    Mouse(MouseSub),
     /// Scroll with the mouse wheel.
     Wheel {
         /// Vertical scroll delta (pixels, positive = down).
@@ -432,18 +420,6 @@ pub enum Command {
         target: String,
         /// Value to set.
         value: String,
-    },
-    /// Press a mouse button down.
-    MouseDown {
-        /// Button: `left`, `right`, `middle`.
-        #[arg(short, long, default_value = "left")]
-        button: String,
-    },
-    /// Release a mouse button.
-    MouseUp {
-        /// Button: `left`, `right`, `middle`.
-        #[arg(short, long, default_value = "left")]
-        button: String,
     },
     /// Add a script to run on every new document (before page JS).
     AddInitScript {
@@ -478,13 +454,9 @@ pub enum Command {
         #[arg(short, long)]
         init: Option<String>,
     },
-    /// Read text from the clipboard.
-    ClipboardRead,
-    /// Write text to the clipboard.
-    ClipboardWrite {
-        /// Text to write.
-        text: String,
-    },
+    /// Clipboard: read, write.
+    #[command(subcommand)]
+    Clipboard(ClipboardSub),
     /// Set download directory path.
     SetDownloadPath {
         /// Absolute directory path.
@@ -555,48 +527,17 @@ pub enum Command {
         filter: Option<String>,
     },
     /// Dialog handling: message, accept, dismiss.
-    Dialog {
-        /// Action: `message`, `accept`, `dismiss`.
-        action: String,
-        /// Prompt text (for `accept` on prompt dialogs).
-        text: Option<String>,
-    },
+    #[command(subcommand)]
+    Dialog(DialogSub),
     /// Cookie management: get, set, clear.
-    Cookie {
-        /// Action: `get`, `set`, `clear`.
-        action: String,
-        /// Cookie string for `set` (e.g. `"name=value; path=/"`).
-        value: Option<String>,
-    },
+    #[command(subcommand)]
+    Cookie(CookieSub),
     /// Storage management: get, set, clear.
-    Storage {
-        /// Action: `get`, `set`, `clear`.
-        action: String,
-        /// Key for get/set.
-        key: Option<String>,
-        /// Value for set.
-        value: Option<String>,
-        /// Use sessionStorage instead of localStorage.
-        #[arg(short, long)]
-        session: bool,
-    },
-    /// Open a new tab.
-    TabNew {
-        /// URL to open (defaults to about:blank).
-        url: Option<String>,
-    },
-    /// List all open tabs.
-    TabList,
-    /// Switch to a tab by index.
-    TabSelect {
-        /// Tab index (0-based).
-        index: usize,
-    },
-    /// Close a tab by index.
-    TabClose {
-        /// Tab index (0-based, defaults to active tab).
-        index: Option<usize>,
-    },
+    #[command(subcommand)]
+    Storage(StorageSub),
+    /// Tab management: new, list, select, close.
+    #[command(subcommand)]
+    Tab(TabSub),
     /// Get captured console messages (drains buffer).
     Console {
         /// Clear logs without returning them.
@@ -621,55 +562,20 @@ pub enum Command {
     #[command(subcommand)]
     State(StateSub),
 
-    /// Start or stop CDP tracing.
-    Trace {
-        /// `start` or `stop`.
-        action: String,
-        /// Tracing categories (comma-separated).
-        #[arg(short, long)]
-        categories: Option<String>,
-        /// File path to write trace output (stop only).
-        #[arg(short, long)]
-        output: Option<String>,
-    },
-    /// Start or stop CDP Profiler.
-    Profiler {
-        /// `start` or `stop`.
-        action: String,
-        /// Tracing categories (comma-separated).
-        #[arg(short, long)]
-        categories: Option<String>,
-        /// File path to write profile output (stop only).
-        #[arg(short, long)]
-        output: Option<String>,
-    },
+    /// CDP tracing: start, stop.
+    #[command(subcommand)]
+    Trace(TraceSub),
+    /// CDP Profiler: start, stop.
+    #[command(subcommand)]
+    Profiler(ProfilerSub),
 
-    /// Start or stop CDP screencast (screen frame capture).
-    Screencast {
-        /// `start` or `stop`.
-        action: String,
-        /// Image format: `jpeg` or `png`.
-        #[arg(long, default_value = "jpeg")]
-        format: String,
-        /// JPEG quality (1–100).
-        #[arg(long, default_value = "80")]
-        quality: u32,
-        /// Max width for captured frames.
-        #[arg(long)]
-        max_width: Option<u32>,
-        /// Max height for captured frames.
-        #[arg(long)]
-        max_height: Option<u32>,
-    },
+    /// CDP screencast: start, stop.
+    #[command(subcommand)]
+    Screencast(ScreencastSub),
 
-    /// Start or stop HAR (HTTP Archive) recording.
-    Har {
-        /// `start` or `stop`.
-        action: String,
-        /// File path to write the HAR JSON (stop only).
-        #[arg(short, long)]
-        output: Option<String>,
-    },
+    /// HAR (HTTP Archive) recording: start, stop.
+    #[command(subcommand)]
+    Har(HarSub),
 
     /// Set allowed domains for navigation (security filter).
     AllowedDomains {
@@ -780,5 +686,189 @@ pub enum StateSub {
         old_name: String,
         /// New name.
         new_name: String,
+    },
+}
+
+/// Dialog subcommands.
+#[derive(Debug, Clone, clap::Subcommand)]
+pub enum DialogSub {
+    /// Get the current dialog message.
+    Message,
+    /// Accept the dialog (optionally with prompt text).
+    Accept {
+        /// Prompt text (for prompt dialogs).
+        text: Option<String>,
+    },
+    /// Dismiss the dialog.
+    Dismiss,
+}
+
+/// Cookie subcommands.
+#[derive(Debug, Clone, clap::Subcommand)]
+pub enum CookieSub {
+    /// Get all cookies.
+    Get,
+    /// Set a cookie.
+    Set {
+        /// Cookie string (e.g. `"name=value; path=/"`).
+        value: String,
+    },
+    /// Clear all cookies.
+    Clear,
+}
+
+/// Storage subcommands.
+#[derive(Debug, Clone, clap::Subcommand)]
+pub enum StorageSub {
+    /// Get a storage item by key.
+    Get {
+        /// Key name.
+        key: String,
+        /// Use sessionStorage instead of localStorage.
+        #[arg(short, long)]
+        session: bool,
+    },
+    /// Set a storage item.
+    Set {
+        /// Key name.
+        key: String,
+        /// Value.
+        value: String,
+        /// Use sessionStorage instead of localStorage.
+        #[arg(short, long)]
+        session: bool,
+    },
+    /// Clear all storage.
+    Clear {
+        /// Use sessionStorage instead of localStorage.
+        #[arg(short, long)]
+        session: bool,
+    },
+}
+
+/// Tab subcommands.
+#[derive(Debug, Clone, clap::Subcommand)]
+pub enum TabSub {
+    /// Open a new tab.
+    New {
+        /// URL to open (defaults to about:blank).
+        url: Option<String>,
+    },
+    /// List all open tabs.
+    List,
+    /// Switch to a tab by index.
+    Select {
+        /// Tab index (0-based).
+        index: usize,
+    },
+    /// Close a tab by index.
+    Close {
+        /// Tab index (0-based, defaults to active tab).
+        index: Option<usize>,
+    },
+}
+
+/// Trace subcommands.
+#[derive(Debug, Clone, clap::Subcommand)]
+pub enum TraceSub {
+    /// Start CDP tracing.
+    Start {
+        /// Tracing categories (comma-separated).
+        #[arg(short, long)]
+        categories: Option<String>,
+    },
+    /// Stop CDP tracing and save output.
+    Stop {
+        /// File path to write trace output.
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+}
+
+/// Profiler subcommands.
+#[derive(Debug, Clone, clap::Subcommand)]
+pub enum ProfilerSub {
+    /// Start CDP Profiler.
+    Start {
+        /// Profiler categories (comma-separated).
+        #[arg(short, long)]
+        categories: Option<String>,
+    },
+    /// Stop CDP Profiler and save output.
+    Stop {
+        /// File path to write profile output.
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+}
+
+/// Screencast subcommands.
+#[derive(Debug, Clone, clap::Subcommand)]
+pub enum ScreencastSub {
+    /// Start screen frame capture.
+    Start {
+        /// Image format: `jpeg` or `png`.
+        #[arg(long, default_value = "jpeg")]
+        format: String,
+        /// JPEG quality (1–100).
+        #[arg(long, default_value = "80")]
+        quality: u32,
+        /// Max width for captured frames.
+        #[arg(long)]
+        max_width: Option<u32>,
+        /// Max height for captured frames.
+        #[arg(long)]
+        max_height: Option<u32>,
+    },
+    /// Stop screen frame capture.
+    Stop,
+}
+
+/// HAR subcommands.
+#[derive(Debug, Clone, clap::Subcommand)]
+pub enum HarSub {
+    /// Start HAR recording.
+    Start,
+    /// Stop HAR recording and save output.
+    Stop {
+        /// File path to write the HAR JSON.
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+}
+
+/// Clipboard subcommands.
+#[derive(Debug, Clone, clap::Subcommand)]
+pub enum ClipboardSub {
+    /// Read text from the clipboard.
+    Read,
+    /// Write text to the clipboard.
+    Write {
+        /// Text to write.
+        text: String,
+    },
+}
+
+/// Mouse subcommands.
+#[derive(Debug, Clone, clap::Subcommand)]
+pub enum MouseSub {
+    /// Move the mouse to absolute coordinates.
+    Move {
+        /// X coordinate.
+        x: f64,
+        /// Y coordinate.
+        y: f64,
+    },
+    /// Press a mouse button down.
+    Down {
+        /// Button: `left`, `right`, `middle`.
+        #[arg(short, long, default_value = "left")]
+        button: String,
+    },
+    /// Release a mouse button.
+    Up {
+        /// Button: `left`, `right`, `middle`.
+        #[arg(short, long, default_value = "left")]
+        button: String,
     },
 }

@@ -2,11 +2,20 @@
 
 use base64::Engine;
 
-use crate::commands::Command;
 use crate::protocol::{Response, ResponseData};
 
+/// Screenshot save configuration extracted from CLI args.
+pub struct ScreenshotOutput {
+    pub path: Option<String>,
+    pub format: String,
+}
+
 /// Print a daemon response as JSON or plain text.
-pub fn print_response(cmd: &Command, response: Response, json_mode: bool) {
+pub fn print_response(
+    response: Response,
+    json_mode: bool,
+    screenshot: Option<&ScreenshotOutput>,
+) {
     match response {
         Response::Ok { data } => {
             if json_mode {
@@ -16,7 +25,7 @@ pub fn print_response(cmd: &Command, response: Response, json_mode: bool) {
                     serde_json::to_string_pretty(&val).expect("valid json")
                 );
             } else {
-                print_plain(cmd, data.as_ref());
+                print_plain(data.as_ref(), screenshot);
             }
         }
         Response::Error { message } => {
@@ -50,7 +59,7 @@ fn response_to_json(data: Option<&ResponseData>) -> serde_json::Value {
 }
 
 /// Print plain-text output for a response.
-fn print_plain(cmd: &Command, data: Option<&ResponseData>) {
+fn print_plain(data: Option<&ResponseData>, screenshot: Option<&ScreenshotOutput>) {
     match data {
         Some(ResponseData::Navigate { url, title }) => {
             println!("url: {url}");
@@ -58,9 +67,9 @@ fn print_plain(cmd: &Command, data: Option<&ResponseData>) {
         }
         Some(ResponseData::Snapshot { tree, .. }) => println!("{tree}"),
         Some(ResponseData::Screenshot { data }) => {
-            if let Command::Screenshot { output, format, .. } = cmd {
-                let path = output.clone().unwrap_or_else(|| {
-                    let ext = if format == "jpeg" { "jpg" } else { "png" };
+            if let Some(ss) = screenshot {
+                let path = ss.path.clone().unwrap_or_else(|| {
+                    let ext = if ss.format == "jpeg" { "jpg" } else { "png" };
                     let ts = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map_or(0, |d| d.as_millis());
@@ -131,8 +140,11 @@ fn print_plain(cmd: &Command, data: Option<&ResponseData>) {
                         .get("url")
                         .and_then(|v| v.as_str())
                         .unwrap_or("(unknown)");
-                    #[allow(clippy::cast_possible_truncation)]
-                    let marker = if idx as usize == *active { " *" } else { "" };
+                    let marker = if usize::try_from(idx).ok() == Some(*active) {
+                        " *"
+                    } else {
+                        ""
+                    };
                     println!("[{idx}] {url}{marker}");
                 }
             }

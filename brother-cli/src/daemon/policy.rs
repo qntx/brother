@@ -209,7 +209,6 @@ const RELOAD_INTERVAL_SECS: u64 = 5;
 
 impl PolicyCache {
     /// Create a new cache from a loaded policy.
-    #[allow(dead_code)]
     pub fn new(path: String, policy: ActionPolicy) -> Self {
         let mtime = fs::metadata(&path)
             .and_then(|m| m.modified())

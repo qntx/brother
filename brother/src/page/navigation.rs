@@ -18,8 +18,7 @@ impl Page {
     /// Go back in history.
     pub async fn go_back(&self) -> Result<()> {
         let idx = self.current_history_index().await?;
-        #[allow(clippy::cast_possible_wrap)]
-        let entry_id = idx.saturating_sub(1) as i64;
+        let entry_id = i64::try_from(idx.saturating_sub(1)).unwrap_or(0);
         self.inner
             .execute(NavigateToHistoryEntryParams::new(entry_id))
             .await
@@ -30,8 +29,7 @@ impl Page {
     /// Go forward in history.
     pub async fn go_forward(&self) -> Result<()> {
         let idx = self.current_history_index().await?;
-        #[allow(clippy::cast_possible_wrap)]
-        let entry_id = (idx + 1) as i64;
+        let entry_id = i64::try_from(idx + 1).unwrap_or(i64::MAX);
         self.inner
             .execute(NavigateToHistoryEntryParams::new(entry_id))
             .await

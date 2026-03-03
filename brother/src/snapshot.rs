@@ -280,13 +280,22 @@ pub fn is_structural(role: &str) -> bool {
         .any(|&r| r.eq_ignore_ascii_case(role))
 }
 
+/// Mutable state accumulated during snapshot rendering.
+struct RenderCtx {
+    ref_counter: u32,
+    refs: RefMap,
+    lines: Vec<String>,
+}
+
 /// Build a [`Snapshot`] from the raw CDP accessibility tree nodes.
 ///
 /// `nodes` should come from `Accessibility.getFullAXTree` CDP response.
 pub fn build_snapshot(nodes: &[serde_json::Value], options: &SnapshotOptions) -> Snapshot {
-    let mut ref_counter: u32 = 0;
-    let mut refs = RefMap::new();
-    let mut lines = Vec::new();
+    let mut ctx = RenderCtx {
+        ref_counter: 0,
+        refs: RefMap::new(),
+        lines: Vec::new(),
+    };
 
     // CDP returns a flat list; the first node is the root.
     // Each node has `childIds` pointing to children by `nodeId`.
@@ -303,35 +312,24 @@ pub fn build_snapshot(nodes: &[serde_json::Value], options: &SnapshotOptions) ->
         .first()
         .and_then(|n| n.get("nodeId").and_then(serde_json::Value::as_str))
     {
-        render_node(
-            root,
-            &node_map,
-            options,
-            0,
-            &mut ref_counter,
-            &mut refs,
-            &mut lines,
-        );
+        render_node(root, &node_map, options, 0, &mut ctx);
     }
 
     // Post-pass: disambiguate refs that share the same (role, name).
     // Count occurrences of each (role, name) pair, then assign nth indices
     // only when there are duplicates (nth stays None for unique elements).
-    disambiguate_refs(&mut refs);
+    disambiguate_refs(&mut ctx.refs);
 
-    Snapshot::new(lines.join("\n"), refs)
+    Snapshot::new(ctx.lines.join("\n"), ctx.refs)
 }
 
 /// Recursively render a single AX node into the output lines.
-#[allow(clippy::too_many_arguments)]
 fn render_node(
     node_id: &str,
     node_map: &HashMap<String, &serde_json::Value>,
     options: &SnapshotOptions,
     depth: usize,
-    ref_counter: &mut u32,
-    refs: &mut RefMap,
-    lines: &mut Vec<String>,
+    ctx: &mut RenderCtx,
 ) {
     let Some(node) = node_map.get(node_id) else {
         return;
@@ -352,7 +350,7 @@ fn render_node(
         .unwrap_or(false)
     {
         // Still recurse into children — ignored containers may have visible children
-        render_children(node, node_map, options, depth, ref_counter, refs, lines);
+        render_children(node, node_map, options, depth, ctx);
         return;
     }
 
@@ -363,20 +361,20 @@ fn render_node(
     // Interactive-only filter
     if options.interactive_only && !interactive {
         // Still recurse — interactive elements may be nested inside non-interactive containers
-        render_children(node, node_map, options, depth, ref_counter, refs, lines);
+        render_children(node, node_map, options, depth, ctx);
         return;
     }
 
     // Compact mode: skip empty structural nodes
     if options.compact && structural && name.is_empty() {
-        render_children(node, node_map, options, depth, ref_counter, refs, lines);
+        render_children(node, node_map, options, depth, ctx);
         return;
     }
 
     // Assign ref if interactive or content-bearing
     let ref_id = if interactive || content {
-        *ref_counter += 1;
-        let id = format!("e{ref_counter}");
+        ctx.ref_counter += 1;
+        let id = format!("e{}", ctx.ref_counter);
 
         let backend_node_id = node
             .get("backendDOMNodeId")
@@ -396,7 +394,7 @@ fn render_node(
                 })
             });
 
-        refs.insert(
+        ctx.refs.insert(
             id.clone(),
             Ref {
                 role: role.clone(),
@@ -426,10 +424,10 @@ fn render_node(
     // Append extra properties (level for headings, checked state, etc.)
     append_properties(node, &role, &mut line);
 
-    lines.push(line);
+    ctx.lines.push(line);
 
     // Recurse into children
-    render_children(node, node_map, options, depth + 1, ref_counter, refs, lines);
+    render_children(node, node_map, options, depth + 1, ctx);
 }
 
 /// Render all children of a node.
@@ -438,16 +436,14 @@ fn render_children(
     node_map: &HashMap<String, &serde_json::Value>,
     options: &SnapshotOptions,
     depth: usize,
-    ref_counter: &mut u32,
-    refs: &mut RefMap,
-    lines: &mut Vec<String>,
+    ctx: &mut RenderCtx,
 ) {
     let Some(children) = node.get("childIds").and_then(serde_json::Value::as_array) else {
         return;
     };
     for child_id in children {
         if let Some(id) = child_id.as_str() {
-            render_node(id, node_map, options, depth, ref_counter, refs, lines);
+            render_node(id, node_map, options, depth, ctx);
         }
     }
 }

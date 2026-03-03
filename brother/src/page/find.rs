@@ -239,7 +239,7 @@ impl Page {
         }
 
         // Build JS to find the element via DOM queries (chromiumoxide, not Playwright)
-        let find_js = self.build_locator_find_js(by, &escaped_val, name, exact);
+        let find_js = Self::build_locator_find_js(by, &escaped_val, name, exact);
 
         let action_js = match subaction {
             "click" => format!(
@@ -299,9 +299,7 @@ impl Page {
 
     /// Build JS code to find an element by locator type.
     /// Sets variable `el` to the first matching element.
-    #[allow(clippy::unused_self)]
     fn build_locator_find_js(
-        &self,
         by: &str,
         escaped_val: &str,
         name: Option<&str>,

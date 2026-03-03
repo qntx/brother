@@ -2,17 +2,18 @@
 
 use brother::{MouseButton, ScrollDirection};
 
-use crate::commands::Command;
+use crate::commands::{
+    ClipboardSub, Command, CookieSub, DialogSub, DiffSub, HarSub, MouseSub, ProfilerSub,
+    ScreencastSub, StateSub, StorageSub, TabSub, TraceSub,
+};
 use crate::protocol::{Request, RouteAction, WaitCondition, WaitStrategy};
 
-/// Map CLI subcommand to daemon protocol request.
-pub fn build_request(cmd: &Command) -> Request {
+/// Map CLI subcommand to daemon protocol request (consumes the command).
+pub fn build_request(cmd: Command) -> Request {
     match cmd {
-        Command::Connect { target } => Request::Connect {
-            target: target.clone(),
-        },
+        Command::Connect { target } => Request::Connect { target },
         Command::Open { url } => Request::Navigate {
-            url: normalize_url(url),
+            url: normalize_url(&url),
             wait: WaitStrategy::Load,
         },
         Command::Snapshot {
@@ -23,12 +24,12 @@ pub fn build_request(cmd: &Command) -> Request {
             cursor,
         } => {
             let mut opts = brother::SnapshotOptions::default()
-                .interactive_only(*interactive)
-                .compact(*compact)
-                .max_depth(*depth)
-                .cursor_interactive(*cursor);
+                .interactive_only(interactive)
+                .compact(compact)
+                .max_depth(depth)
+                .cursor_interactive(cursor);
             if let Some(sel) = selector {
-                opts = opts.selector(sel.clone());
+                opts = opts.selector(sel);
             }
             Request::Snapshot { options: opts }
         }
@@ -39,82 +40,52 @@ pub fn build_request(cmd: &Command) -> Request {
             delay,
             new_tab,
         } => Request::Click {
-            target: target.clone(),
-            button: parse_mouse_button(button),
-            click_count: *click_count,
-            delay: *delay,
-            new_tab: *new_tab,
+            target,
+            button: parse_mouse_button(&button),
+            click_count,
+            delay,
+            new_tab,
         },
-        Command::Dblclick { target } => Request::DblClick {
-            target: target.clone(),
-        },
-        Command::Fill { target, value } => Request::Fill {
-            target: target.clone(),
-            value: value.clone(),
-        },
+        Command::Dblclick { target } => Request::DblClick { target },
+        Command::Fill { target, value } => Request::Fill { target, value },
         Command::Type {
             text,
             target,
             delay,
             clear,
         } => Request::Type {
-            target: target.clone(),
-            text: text.clone(),
-            delay_ms: *delay,
-            clear: *clear,
+            target,
+            text,
+            delay_ms: delay,
+            clear,
         },
-        Command::Press { key } => Request::Press { key: key.clone() },
-        Command::Select { target, values } => Request::Select {
-            target: target.clone(),
-            values: values.clone(),
-        },
-        Command::Check { target } => Request::Check {
-            target: target.clone(),
-        },
-        Command::Uncheck { target } => Request::Uncheck {
-            target: target.clone(),
-        },
-        Command::Hover { target } => Request::Hover {
-            target: target.clone(),
-        },
-        Command::Focus { target } => Request::Focus {
-            target: target.clone(),
-        },
+        Command::Press { key } => Request::Press { key },
+        Command::Select { target, values } => Request::Select { target, values },
+        Command::Check { target } => Request::Check { target },
+        Command::Uncheck { target } => Request::Uncheck { target },
+        Command::Hover { target } => Request::Hover { target },
+        Command::Focus { target } => Request::Focus { target },
         Command::Scroll {
             direction,
             pixels,
             target,
         } => Request::Scroll {
-            direction: parse_direction(direction),
-            pixels: *pixels,
-            target: target.clone(),
+            direction: parse_direction(&direction),
+            pixels,
+            target,
         },
-        Command::Frame { selector } => Request::Frame {
-            selector: selector.clone(),
-        },
+        Command::Frame { selector } => Request::Frame { selector },
         Command::MainFrame => Request::MainFrame,
-        Command::KeyDown { key } => Request::KeyDown { key: key.clone() },
-        Command::KeyUp { key } => Request::KeyUp { key: key.clone() },
-        Command::InsertText { text } => Request::InsertText { text: text.clone() },
-        Command::Upload { target, files } => Request::Upload {
-            target: target.clone(),
-            files: files.clone(),
-        },
-        Command::Drag { source, target } => Request::Drag {
-            source: source.clone(),
-            target: target.clone(),
-        },
-        Command::Clear { target } => Request::Clear {
-            target: target.clone(),
-        },
-        Command::ScrollIntoView { target } => Request::ScrollIntoView {
-            target: target.clone(),
-        },
-        Command::BoundingBox { target } => Request::BoundingBox {
-            target: target.clone(),
-        },
-        Command::SetContent { html } => Request::SetContent { html: html.clone() },
-        Command::Pdf { path } => Request::Pdf { path: path.clone() },
+        Command::KeyDown { key } => Request::KeyDown { key },
+        Command::KeyUp { key } => Request::KeyUp { key },
+        Command::InsertText { text } => Request::InsertText { text },
+        Command::Upload { target, files } => Request::Upload { target, files },
+        Command::Drag { source, target } => Request::Drag { source, target },
+        Command::Clear { target } => Request::Clear { target },
+        Command::ScrollIntoView { target } => Request::ScrollIntoView { target },
+        Command::BoundingBox { target } => Request::BoundingBox { target },
+        Command::SetContent { html } => Request::SetContent { html },
+        Command::Pdf { path } => Request::Pdf { path },
         Command::Screenshot {
             full_page,
             selector,
@@ -122,17 +93,13 @@ pub fn build_request(cmd: &Command) -> Request {
             quality,
             ..
         } => Request::Screenshot {
-            full_page: *full_page,
-            selector: selector.clone(),
-            format: format.clone(),
-            quality: *quality,
+            full_page,
+            selector,
+            format,
+            quality,
         },
-        Command::Eval { expression } => Request::Eval {
-            expression: expression.clone(),
-        },
-        Command::Get { what, target, attr } => {
-            build_get_request(what, target.as_deref(), attr.as_deref())
-        }
+        Command::Eval { expression } => Request::Eval { expression },
+        Command::Get { what, target, attr } => build_get_request(&what, target, attr),
         Command::Back => Request::Back,
         Command::Forward => Request::Forward,
         Command::Reload => Request::Reload,
@@ -143,14 +110,7 @@ pub fn build_request(cmd: &Command) -> Request {
             load,
             function,
             timeout,
-        } => build_wait_request(
-            target.as_deref(),
-            text.as_deref(),
-            url.as_deref(),
-            load.as_deref(),
-            function.as_deref(),
-            *timeout,
-        ),
+        } => build_wait_request(target, text, url, load, function, timeout),
         Command::Find {
             by,
             value,
@@ -159,139 +119,107 @@ pub fn build_request(cmd: &Command) -> Request {
             subaction,
             fill_value,
         } => Request::Find {
-            by: by.clone(),
-            value: value.clone(),
-            name: name.clone(),
-            exact: *exact,
-            subaction: subaction.clone(),
-            fill_value: fill_value.clone(),
+            by,
+            value,
+            name,
+            exact,
+            subaction,
+            fill_value,
         },
-        Command::Device { name } => Request::Device { name: name.clone() },
+        Command::Device { name } => Request::Device { name },
         Command::DeviceList => Request::DeviceList,
-        Command::WindowNew { width, height } => Request::WindowNew {
-            width: *width,
-            height: *height,
-        },
-        Command::Viewport { width, height } => Request::Viewport {
-            width: *width,
-            height: *height,
-        },
+        Command::WindowNew { width, height } => Request::WindowNew { width, height },
+        Command::Viewport { width, height } => Request::Viewport { width, height },
         Command::EmulateMedia {
             media,
             color_scheme,
             reduced_motion,
             forced_colors,
         } => Request::EmulateMedia {
-            media: media.clone(),
-            color_scheme: color_scheme.clone(),
-            reduced_motion: reduced_motion.clone(),
-            forced_colors: forced_colors.clone(),
+            media,
+            color_scheme,
+            reduced_motion,
+            forced_colors,
         },
-        Command::Offline { offline } => Request::Offline { offline: *offline },
-        Command::ExtraHeaders { headers_json } => Request::ExtraHeaders {
-            headers_json: headers_json.clone(),
-        },
+        Command::Offline { offline } => Request::Offline { offline },
+        Command::ExtraHeaders { headers_json } => Request::ExtraHeaders { headers_json },
         Command::Geolocation {
             latitude,
             longitude,
             accuracy,
         } => Request::Geolocation {
-            latitude: *latitude,
-            longitude: *longitude,
-            accuracy: *accuracy,
+            latitude,
+            longitude,
+            accuracy,
         },
-        Command::Credentials { username, password } => Request::Credentials {
-            username: username.clone(),
-            password: password.clone(),
-        },
-        Command::UserAgent { user_agent } => Request::UserAgent {
-            user_agent: user_agent.clone(),
-        },
-        Command::Timezone { timezone_id } => Request::Timezone {
-            timezone_id: timezone_id.clone(),
-        },
-        Command::Locale { locale } => Request::Locale {
-            locale: locale.clone(),
-        },
+        Command::Credentials { username, password } => {
+            Request::Credentials { username, password }
+        }
+        Command::UserAgent { user_agent } => Request::UserAgent { user_agent },
+        Command::Timezone { timezone_id } => Request::Timezone { timezone_id },
+        Command::Locale { locale } => Request::Locale { locale },
         Command::Permissions { permissions, deny } => Request::Permissions {
-            permissions: permissions.clone(),
+            permissions,
             grant: !deny,
         },
         Command::BringToFront => Request::BringToFront,
-        Command::Styles { target } => Request::Styles {
-            target: target.clone(),
-        },
-        Command::SelectAll { target } => Request::SelectAll {
-            target: target.clone(),
-        },
-        Command::Highlight { target } => Request::Highlight {
-            target: target.clone(),
-        },
-        Command::MouseMove { x, y } => Request::MouseMove { x: *x, y: *y },
-        Command::MouseDown { button } => Request::MouseDown {
-            button: parse_mouse_button(button),
-        },
-        Command::MouseUp { button } => Request::MouseUp {
-            button: parse_mouse_button(button),
+        Command::Styles { target } => Request::Styles { target },
+        Command::SelectAll { target } => Request::SelectAll { target },
+        Command::Highlight { target } => Request::Highlight { target },
+        Command::Mouse(sub) => match sub {
+            MouseSub::Move { x, y } => Request::MouseMove { x, y },
+            MouseSub::Down { button } => Request::MouseDown {
+                button: parse_mouse_button(&button),
+            },
+            MouseSub::Up { button } => Request::MouseUp {
+                button: parse_mouse_button(&button),
+            },
         },
         Command::Wheel {
             delta_y,
             delta_x,
             selector,
         } => Request::Wheel {
-            delta_x: *delta_x,
-            delta_y: *delta_y,
-            selector: selector.clone(),
+            delta_x,
+            delta_y,
+            selector,
         },
-        Command::Tap { target } => Request::Tap {
-            target: target.clone(),
-        },
-        Command::SetValue { target, value } => Request::SetValue {
-            target: target.clone(),
-            value: value.clone(),
-        },
-        Command::AddInitScript { script } => Request::AddInitScript {
-            script: script.clone(),
-        },
-        Command::AddScript { content, url } => Request::AddScript {
-            content: content.clone(),
-            url: url.clone(),
-        },
-        Command::AddStyle { content, url } => Request::AddStyle {
-            content: content.clone(),
-            url: url.clone(),
-        },
+        Command::Tap { target } => Request::Tap { target },
+        Command::SetValue { target, value } => Request::SetValue { target, value },
+        Command::AddInitScript { script } => Request::AddInitScript { script },
+        Command::AddScript { content, url } => Request::AddScript { content, url },
+        Command::AddStyle { content, url } => Request::AddStyle { content, url },
         Command::Dispatch {
             target,
             event,
             init,
         } => Request::Dispatch {
-            target: target.clone(),
-            event: event.clone(),
-            event_init: init.clone(),
+            target,
+            event,
+            event_init: init,
         },
-        Command::ClipboardRead => Request::ClipboardRead,
-        Command::ClipboardWrite { text } => Request::ClipboardWrite { text: text.clone() },
-        Command::SetDownloadPath { path } => Request::SetDownloadPath { path: path.clone() },
-        Command::Downloads { action } => Request::Downloads {
-            action: action.clone(),
+        Command::Clipboard(sub) => match sub {
+            ClipboardSub::Read => Request::ClipboardRead,
+            ClipboardSub::Write { text } => Request::ClipboardWrite { text },
         },
+        Command::SetDownloadPath { path } => Request::SetDownloadPath { path },
+        Command::Downloads { action } => Request::Downloads { action },
         Command::DownloadClick {
             target,
             path,
             timeout,
         } => Request::Download {
-            target: target.clone(),
-            path: path.clone(),
-            timeout_ms: *timeout,
+            target,
+            path,
+            timeout_ms: timeout,
         },
         Command::WaitForDownload { path, timeout } => Request::WaitForDownload {
-            path: path.clone(),
-            timeout_ms: *timeout,
+            path,
+            timeout_ms: timeout,
         },
         Command::ResponseBody { url, timeout } => Request::ResponseBody {
-            url: url.clone(),
-            timeout_ms: *timeout,
+            url,
+            timeout_ms: timeout,
         },
         Command::Route {
             pattern,
@@ -300,121 +228,88 @@ pub fn build_request(cmd: &Command) -> Request {
             body,
             content_type,
         } => Request::Route {
-            pattern: pattern.clone(),
-            action: parse_route_action(action),
-            status: *status,
-            body: body.clone(),
-            content_type: content_type.clone(),
+            pattern,
+            action: parse_route_action(&action),
+            status,
+            body,
+            content_type,
         },
-        Command::Unroute { pattern } => Request::Unroute {
-            pattern: pattern.clone(),
+        Command::Unroute { pattern } => Request::Unroute { pattern },
+        Command::Requests { action, filter } => Request::Requests { action, filter },
+        Command::Dialog(sub) => match sub {
+            DialogSub::Message => Request::DialogMessage,
+            DialogSub::Accept { text } => Request::DialogAccept { prompt_text: text },
+            DialogSub::Dismiss => Request::DialogDismiss,
         },
-        Command::Requests { action, filter } => Request::Requests {
-            action: action.clone(),
-            filter: filter.clone(),
+        Command::Cookie(sub) => match sub {
+            CookieSub::Get => Request::GetCookies,
+            CookieSub::Set { value } => Request::SetCookie { cookie: value },
+            CookieSub::Clear => Request::ClearCookies,
         },
-        Command::Dialog { action, text } => match action.as_str() {
-            "accept" => Request::DialogAccept {
-                prompt_text: text.clone(),
-            },
-            "dismiss" => Request::DialogDismiss,
-            // "message" and any unknown variant default to DialogMessage
-            _ => Request::DialogMessage,
-        },
-        Command::Cookie { action, value } => match action.as_str() {
-            "set" => Request::SetCookie {
-                cookie: value.clone().unwrap_or_default(),
-            },
-            "clear" => Request::ClearCookies,
-            // "get" and any unknown variant default to GetCookies
-            _ => Request::GetCookies,
-        },
-        Command::Storage {
-            action,
-            key,
-            value,
-            session,
-        } => match action.as_str() {
-            "set" => Request::SetStorage {
-                key: key.clone().unwrap_or_default(),
-                value: value.clone().unwrap_or_default(),
-                session: *session,
-            },
-            "clear" => Request::ClearStorage { session: *session },
-            // "get" and any unknown variant default to GetStorage
-            _ => Request::GetStorage {
-                key: key.clone().unwrap_or_default(),
-                session: *session,
-            },
-        },
-        Command::StateCheck { what, target } | Command::Is { what, target } => {
-            match what.as_str() {
-                "enabled" => Request::IsEnabled {
-                    target: target.clone(),
-                },
-                "checked" => Request::IsChecked {
-                    target: target.clone(),
-                },
-                "count" => Request::Count {
-                    selector: target.clone(),
-                },
-                // "visible" and any unknown variant default to IsVisible
-                _ => Request::IsVisible {
-                    target: target.clone(),
-                },
+        Command::Storage(sub) => match sub {
+            StorageSub::Get { key, session } => Request::GetStorage { key, session },
+            StorageSub::Set { key, value, session } => {
+                Request::SetStorage { key, value, session }
             }
-        }
+            StorageSub::Clear { session } => Request::ClearStorage { session },
+        },
+        Command::Query { what, target } => build_query_request(&what, target),
         Command::Nth {
             selector,
             index,
             subaction,
             fill_value,
         } => Request::Nth {
-            selector: selector.clone(),
-            index: *index,
-            subaction: subaction.clone(),
-            fill_value: fill_value.clone(),
+            selector,
+            index,
+            subaction,
+            fill_value,
         },
-        Command::Expose { name } => Request::Expose { name: name.clone() },
-        Command::TabNew { url } => Request::TabNew { url: url.clone() },
-        Command::TabList => Request::TabList,
-        Command::TabSelect { index } => Request::TabSelect { index: *index },
-        Command::TabClose { index } => Request::TabClose { index: *index },
-        Command::Console { clear } => Request::Console { clear: *clear },
-        Command::Errors { clear } => Request::Errors { clear: *clear },
+        Command::Expose { name } => Request::Expose { name },
+        Command::Tab(sub) => match sub {
+            TabSub::New { url } => Request::TabNew { url },
+            TabSub::List => Request::TabList,
+            TabSub::Select { index } => Request::TabSelect { index },
+            TabSub::Close { index } => Request::TabClose { index },
+        },
+        Command::Console { clear } => Request::Console { clear },
+        Command::Errors { clear } => Request::Errors { clear },
         Command::DiffSnapshot { sub } => match sub {
-            crate::commands::DiffSub::Snapshot {
+            DiffSub::Snapshot {
                 baseline,
                 interactive,
                 compact,
             } => {
                 let baseline_text = baseline
-                    .as_ref()
                     .and_then(|p| std::fs::read_to_string(p).ok())
                     .unwrap_or_default();
-                let opts = brother::SnapshotOptions::default()
-                    .interactive_only(*interactive)
-                    .compact(*compact);
                 Request::DiffSnapshot {
                     baseline: baseline_text,
-                    options: opts,
+                    options: brother::SnapshotOptions::default()
+                        .interactive_only(interactive)
+                        .compact(compact),
                 }
             }
-            crate::commands::DiffSub::Screenshot {
+            DiffSub::Screenshot {
                 baseline,
                 threshold,
                 full_page,
             } => {
-                let baseline_b64 = std::fs::read(baseline)
-                    .map(|bytes| base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes))
+                let baseline_b64 = std::fs::read(&baseline)
+                    .map(|bytes| {
+                        base64::Engine::encode(
+                            &base64::engine::general_purpose::STANDARD,
+                            &bytes,
+                        )
+                    })
                     .unwrap_or_default();
                 Request::DiffScreenshot {
                     baseline: baseline_b64,
-                    threshold: *threshold,
-                    full_page: *full_page,
+                    threshold,
+                    full_page,
                 }
             }
-            crate::commands::DiffSub::Url {
+            DiffSub::Url {
                 url_a,
                 url_b,
                 screenshot,
@@ -425,87 +320,63 @@ pub fn build_request(cmd: &Command) -> Request {
                 selector,
             } => {
                 let mut opts = brother::SnapshotOptions::default()
-                    .interactive_only(*interactive)
-                    .compact(*compact)
+                    .interactive_only(interactive)
+                    .compact(compact)
                     .max_depth(depth.unwrap_or(0));
                 if let Some(sel) = selector {
-                    opts = opts.selector(sel.clone());
+                    opts = opts.selector(sel);
                 }
                 Request::DiffUrl {
-                    url_a: url_a.clone(),
-                    url_b: url_b.clone(),
-                    screenshot: *screenshot,
-                    threshold: *threshold,
+                    url_a,
+                    url_b,
+                    screenshot,
+                    threshold,
                     options: opts,
                 }
             }
         },
         Command::State(sub) => match sub {
-            crate::commands::StateSub::Save { name } => Request::StateSave { name: name.clone() },
-            crate::commands::StateSub::Load { name } => Request::StateLoad { name: name.clone() },
-            crate::commands::StateSub::List => Request::StateList,
-            crate::commands::StateSub::Clear { name } => Request::StateClear { name: name.clone() },
-            crate::commands::StateSub::Show { name } => Request::StateShow { name: name.clone() },
-            crate::commands::StateSub::Clean { days } => Request::StateClean { days: *days },
-            crate::commands::StateSub::Rename { old_name, new_name } => Request::StateRename {
-                old_name: old_name.clone(),
-                new_name: new_name.clone(),
-            },
+            StateSub::Save { name } => Request::StateSave { name },
+            StateSub::Load { name } => Request::StateLoad { name },
+            StateSub::List => Request::StateList,
+            StateSub::Clear { name } => Request::StateClear { name },
+            StateSub::Show { name } => Request::StateShow { name },
+            StateSub::Clean { days } => Request::StateClean { days },
+            StateSub::Rename { old_name, new_name } => {
+                Request::StateRename { old_name, new_name }
+            }
         },
-        Command::Trace {
-            action,
-            categories,
-            output,
-        } => match action.as_str() {
-            "stop" => Request::TraceStop {
-                path: output.clone(),
+        Command::Trace(sub) => match sub {
+            TraceSub::Start { categories } => Request::TraceStart {
+                categories: parse_categories(categories),
             },
-            _ => Request::TraceStart {
-                categories: categories
-                    .as_deref()
-                    .map(|c| c.split(',').map(|s| s.trim().to_owned()).collect())
-                    .unwrap_or_default(),
-            },
+            TraceSub::Stop { output } => Request::TraceStop { path: output },
         },
-        Command::Profiler {
-            action,
-            categories,
-            output,
-        } => match action.as_str() {
-            "stop" => Request::ProfilerStop {
-                path: output.clone(),
+        Command::Profiler(sub) => match sub {
+            ProfilerSub::Start { categories } => Request::ProfilerStart {
+                categories: parse_categories(categories),
             },
-            _ => Request::ProfilerStart {
-                categories: categories
-                    .as_deref()
-                    .map(|c| c.split(',').map(|s| s.trim().to_owned()).collect())
-                    .unwrap_or_default(),
+            ProfilerSub::Stop { output } => Request::ProfilerStop { path: output },
+        },
+        Command::Screencast(sub) => match sub {
+            ScreencastSub::Start {
+                format,
+                quality,
+                max_width,
+                max_height,
+            } => Request::ScreencastStart {
+                format,
+                quality,
+                max_width,
+                max_height,
             },
+            ScreencastSub::Stop => Request::ScreencastStop,
         },
-        Command::Screencast {
-            action,
-            format,
-            quality,
-            max_width,
-            max_height,
-        } => match action.as_str() {
-            "stop" => Request::ScreencastStop,
-            _ => Request::ScreencastStart {
-                format: format.clone(),
-                quality: *quality,
-                max_width: *max_width,
-                max_height: *max_height,
-            },
+        Command::Har(sub) => match sub {
+            HarSub::Start => Request::HarStart,
+            HarSub::Stop { output } => Request::HarStop { path: output },
         },
-        Command::Har { action, output } => match action.as_str() {
-            "stop" => Request::HarStop {
-                path: output.clone(),
-            },
-            _ => Request::HarStart,
-        },
-        Command::AllowedDomains { domains } => Request::SetAllowedDomains {
-            domains: domains.clone(),
-        },
+        Command::AllowedDomains { domains } => Request::SetAllowedDomains { domains },
         Command::Status | Command::Daemon => Request::Status,
         Command::Close => Request::Close,
     }
@@ -535,82 +406,84 @@ fn parse_route_action(s: &str) -> RouteAction {
     }
 }
 
-fn build_get_request(what: &str, target: Option<&str>, attr: Option<&str>) -> Request {
+fn parse_categories(input: Option<String>) -> Vec<String> {
+    input
+        .map(|c| c.split(',').map(|s| s.trim().to_owned()).collect())
+        .unwrap_or_default()
+}
+
+fn build_get_request(what: &str, target: Option<String>, attr: Option<String>) -> Request {
     match what {
         "url" => Request::GetUrl,
         "title" => Request::GetTitle,
         "content" => Request::GetContent,
         "innertext" => Request::GetInnerText {
-            target: target.unwrap_or("body").to_owned(),
+            target: target.unwrap_or_else(|| "body".to_owned()),
         },
         "html" => Request::GetHtml {
-            target: target.unwrap_or("body").to_owned(),
+            target: target.unwrap_or_else(|| "body".to_owned()),
         },
         "value" => Request::GetValue {
-            target: target.unwrap_or("input").to_owned(),
+            target: target.unwrap_or_else(|| "input".to_owned()),
         },
         "attribute" | "attr" => Request::GetAttribute {
-            target: target.unwrap_or("body").to_owned(),
-            attribute: attr.unwrap_or("class").to_owned(),
+            target: target.unwrap_or_else(|| "body".to_owned()),
+            attribute: attr.unwrap_or_else(|| "class".to_owned()),
         },
-        // Default: get text
-        _ => Request::GetText {
-            target: target.map(str::to_owned),
-        },
+        _ => Request::GetText { target },
     }
 }
 
-#[allow(clippy::option_if_let_else)] // Explicit priority chain is clearer than nested map_or_else.
+fn build_query_request(what: &str, target: String) -> Request {
+    match what {
+        "enabled" => Request::IsEnabled { target },
+        "checked" => Request::IsChecked { target },
+        "count" => Request::Count { selector: target },
+        _ => Request::IsVisible { target },
+    }
+}
+
 fn build_wait_request(
-    target: Option<&str>,
-    text: Option<&str>,
-    url: Option<&str>,
-    load: Option<&str>,
-    function: Option<&str>,
+    target: Option<String>,
+    text: Option<String>,
+    url: Option<String>,
+    load: Option<String>,
+    function: Option<String>,
     timeout: u64,
 ) -> Request {
-    // Priority: explicit flags first, then positional target
-    let condition = if let Some(t) = text {
-        WaitCondition::Text {
-            text: t.to_owned(),
+    let condition = match (text, url, function, load, target) {
+        (Some(text), ..) => WaitCondition::Text {
+            text,
             timeout_ms: timeout,
-        }
-    } else if let Some(u) = url {
-        WaitCondition::Url {
-            pattern: u.to_owned(),
+        },
+        (_, Some(pattern), ..) => WaitCondition::Url {
+            pattern,
             timeout_ms: timeout,
-        }
-    } else if let Some(f) = function {
-        WaitCondition::Function {
-            expression: f.to_owned(),
+        },
+        (_, _, Some(expression), ..) => WaitCondition::Function {
+            expression,
             timeout_ms: timeout,
-        }
-    } else if let Some(l) = load {
-        let state = match l {
-            "domcontentloaded" => WaitStrategy::DomContentLoaded,
-            "networkidle" => WaitStrategy::NetworkIdle,
-            _ => WaitStrategy::Load,
-        };
-        WaitCondition::LoadState {
-            state,
+        },
+        (_, _, _, Some(l), _) => WaitCondition::LoadState {
+            state: match l.as_str() {
+                "domcontentloaded" => WaitStrategy::DomContentLoaded,
+                "networkidle" => WaitStrategy::NetworkIdle,
+                _ => WaitStrategy::Load,
+            },
             timeout_ms: timeout,
-        }
-    } else if let Some(sel) = target {
-        // Numeric → duration; otherwise → CSS selector
-        sel.parse::<u64>().map_or_else(
+        },
+        (_, _, _, _, Some(sel)) => sel.parse::<u64>().map_or_else(
             |_| WaitCondition::Selector {
-                selector: sel.to_owned(),
+                selector: sel,
                 timeout_ms: timeout,
             },
             |ms| WaitCondition::Duration { ms },
-        )
-    } else {
-        WaitCondition::Duration { ms: timeout }
+        ),
+        _ => WaitCondition::Duration { ms: timeout },
     };
     Request::Wait { condition }
 }
 
-/// Auto-prepend `https://` if the URL has no scheme.
 fn normalize_url(url: &str) -> String {
     if url.contains("://") || url.starts_with("data:") || url.starts_with("about:") {
         url.to_owned()

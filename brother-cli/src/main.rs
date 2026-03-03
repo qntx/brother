@@ -98,7 +98,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     };
 
     if matches!(cli.command, Command::Daemon) {
-        daemon::run_session(&session, None).await?;
+        daemon::run_session(&session, None, cfg.policy_file.as_deref()).await?;
         return Ok(());
     }
 
@@ -112,9 +112,17 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         let _ = client.send(&req).await?;
     }
 
-    let req = request::build_request(&cli.command);
+    let screenshot_out = match &cli.command {
+        Command::Screenshot { output, format, .. } => Some(output::ScreenshotOutput {
+            path: output.clone(),
+            format: format.clone(),
+        }),
+        _ => None,
+    };
+
+    let req = request::build_request(cli.command);
     let response = client.send(&req).await?;
-    output::print_response(&cli.command, response, json);
+    output::print_response(response, json, screenshot_out.as_ref());
     Ok(())
 }
 
