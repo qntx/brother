@@ -25,6 +25,7 @@ reqwest = { workspace = true }
 chromiumoxide = { workspace = true }
 anyhow = { workspace = true }
 toml = { workspace = true }
+png = { workspace = true }
 
 [lints]
 workspace = true

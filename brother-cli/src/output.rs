@@ -150,8 +150,11 @@ fn print_plain(cmd: &Command, data: Option<&ResponseData>) {
                 println!("{diff}---\n{summary}");
             }
         }
-        Some(ResponseData::DiffScreenshot { summary, .. }) => {
+        Some(ResponseData::DiffScreenshot {
+            diff_path, summary, ..
+        }) => {
             println!("{summary}");
+            println!("diff image: {diff_path}");
         }
         Some(ResponseData::StateList { states }) => {
             if states.is_empty() {

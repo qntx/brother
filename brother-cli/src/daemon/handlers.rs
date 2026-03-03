@@ -20,6 +20,18 @@ pub(super) async fn cmd_navigate(
     url: &str,
     wait: WaitStrategy,
 ) -> Response {
+    // Domain filter: block navigation to non-allowed domains.
+    {
+        let guard = state.lock().await;
+        if !guard.allowed_domains.is_empty()
+            && let Some(host) = super::domain_filter::extract_host(url)
+            && !super::domain_filter::is_allowed(&host, &guard.allowed_domains)
+        {
+            return Response::error(format!(
+                "navigation blocked: {host} is not in the allowed domains list"
+            ));
+        }
+    }
     let page = match get_page(state).await {
         Ok(p) => p,
         Err(r) => return r,
@@ -841,6 +853,9 @@ pub(super) async fn cmd_diff_snapshot(
 }
 
 /// Compare current screenshot against baseline (base64-encoded PNG).
+///
+/// Decodes PNGs in Rust (no browser round-trip), generates a diff image
+/// with red-highlighted pixels, and saves it to `~/.brother/tmp/diffs/`.
 pub(super) async fn cmd_diff_screenshot(
     state: &Arc<Mutex<DaemonState>>,
     baseline_b64: &str,
@@ -867,12 +882,12 @@ pub(super) async fn cmd_diff_screenshot(
         Err(e) => return Response::error(format!("invalid baseline base64: {e}")),
     };
 
-    // Decode both PNGs to RGBA via browser Canvas API
-    let baseline_rgba = match decode_png_via_js(&page, &baseline_bytes).await {
+    // Decode both PNGs to RGBA using the png crate (no browser round-trip)
+    let baseline_rgba = match decode_png_to_rgba(&baseline_bytes) {
         Ok(r) => r,
         Err(e) => return Response::error(format!("baseline decode: {e}")),
     };
-    let current_rgba = match decode_png_via_js(&page, &current_bytes).await {
+    let current_rgba = match decode_png_to_rgba(&current_bytes) {
         Ok(r) => r,
         Err(e) => return Response::error(format!("current decode: {e}")),
     };
@@ -887,7 +902,20 @@ pub(super) async fn cmd_diff_screenshot(
         threshold,
     );
 
+    // Generate diff image and save to disk
+    let diff_path = match generate_diff_image(
+        &baseline_rgba,
+        &current_rgba,
+        threshold,
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => return Response::error(format!("diff image: {e}")),
+    };
+
     Response::ok_data(ResponseData::DiffScreenshot {
+        diff_path,
         total_pixels: result.total_pixels,
         diff_pixels: result.diff_pixels,
         diff_percentage: result.diff_percentage,
@@ -903,68 +931,133 @@ struct RgbaImage {
     height: u32,
 }
 
-/// Decode a PNG to RGBA pixel data using the browser Canvas API.
-async fn decode_png_via_js(
-    page: &brother::Page,
-    png_bytes: &[u8],
-) -> Result<RgbaImage, String> {
-    let b64 = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        png_bytes,
-    );
+/// Decode a PNG buffer to RGBA pixel data using the `png` crate.
+fn decode_png_to_rgba(data: &[u8]) -> Result<RgbaImage, String> {
+    let decoder = png::Decoder::new(std::io::Cursor::new(data));
+    let mut reader = decoder.read_info().map_err(|e| format!("png header: {e}"))?;
+    let mut buf = vec![0u8; reader.output_buffer_size()];
+    let info = reader
+        .next_frame(&mut buf)
+        .map_err(|e| format!("png frame: {e}"))?;
+    buf.truncate(info.buffer_size());
 
-    let js = format!(
-        r"(async () => {{
-            const img = new Image();
-            const blob = await fetch('data:image/png;base64,{b64}').then(r => r.blob());
-            const url = URL.createObjectURL(blob);
-            await new Promise((resolve, reject) => {{
-                img.onload = resolve;
-                img.onerror = reject;
-                img.src = url;
-            }});
-            URL.revokeObjectURL(url);
-            const c = document.createElement('canvas');
-            c.width = img.naturalWidth;
-            c.height = img.naturalHeight;
-            const ctx = c.getContext('2d');
-            ctx.drawImage(img, 0, 0);
-            const data = ctx.getImageData(0, 0, c.width, c.height);
-            return JSON.stringify({{
-                width: c.width,
-                height: c.height,
-                pixels: Array.from(data.data)
-            }});
-        }})()",
-    );
+    let width = info.width;
+    let height = info.height;
 
-    let val = page
-        .eval(&js)
-        .await
-        .map_err(|e| format!("JS decode failed: {e}"))?;
-
-    let json_str = val
-        .as_str()
-        .ok_or_else(|| "decode returned non-string".to_owned())?;
-
-    let parsed: serde_json::Value =
-        serde_json::from_str(json_str).map_err(|e| format!("parse failed: {e}"))?;
-
-    #[allow(clippy::cast_possible_truncation)]
-    let width = parsed["width"].as_u64().unwrap_or(0) as u32;
-    #[allow(clippy::cast_possible_truncation)]
-    let height = parsed["height"].as_u64().unwrap_or(0) as u32;
-    #[allow(clippy::cast_possible_truncation)]
-    let pixels: Vec<u8> = parsed["pixels"]
-        .as_array()
-        .map(|arr| arr.iter().filter_map(|v| v.as_u64().map(|n| n as u8)).collect())
-        .unwrap_or_default();
+    // Convert to RGBA if needed
+    let pixels = match info.color_type {
+        png::ColorType::Rgba => buf,
+        png::ColorType::Rgb => {
+            let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+            for chunk in buf.chunks_exact(3) {
+                rgba.extend_from_slice(chunk);
+                rgba.push(255);
+            }
+            rgba
+        }
+        png::ColorType::GrayscaleAlpha => {
+            let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+            for chunk in buf.chunks_exact(2) {
+                let g = chunk[0];
+                rgba.extend_from_slice(&[g, g, g, chunk[1]]);
+            }
+            rgba
+        }
+        png::ColorType::Grayscale => {
+            let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+            for &g in &buf {
+                rgba.extend_from_slice(&[g, g, g, 255]);
+            }
+            rgba
+        }
+        other @ png::ColorType::Indexed => return Err(format!("unsupported color type: {other:?}")),
+    };
 
     Ok(RgbaImage {
         pixels,
         width,
         height,
     })
+}
+
+/// Generate a diff PNG: different pixels in red, same pixels dimmed.
+/// Saves to `~/.brother/tmp/diffs/diff-<timestamp>.png`.
+async fn generate_diff_image(
+    baseline: &RgbaImage,
+    current: &RgbaImage,
+    threshold: u8,
+) -> Result<String, String> {
+    let w = baseline.width.max(current.width);
+    let h = baseline.height.max(current.height);
+    let mut diff_pixels = vec![0u8; (w * h * 4) as usize];
+
+    let thresh_sq = i32::from(threshold) * i32::from(threshold) * 3;
+
+    for y in 0..h {
+        for x in 0..w {
+            let di = ((y * w + x) * 4) as usize;
+            let get_pixel = |img: &RgbaImage, px: u32, py: u32| -> [u8; 4] {
+                if px < img.width && py < img.height {
+                    let i = ((py * img.width + px) * 4) as usize;
+                    [img.pixels[i], img.pixels[i + 1], img.pixels[i + 2], img.pixels[i + 3]]
+                } else {
+                    [0, 0, 0, 0]
+                }
+            };
+
+            let a = get_pixel(baseline, x, y);
+            let b = get_pixel(current, x, y);
+
+            let dr = i32::from(a[0]) - i32::from(b[0]);
+            let dg = i32::from(a[1]) - i32::from(b[1]);
+            let db = i32::from(a[2]) - i32::from(b[2]);
+            let dist_sq = dr * dr + dg * dg + db * db;
+
+            if dist_sq > thresh_sq {
+                // Different: red
+                diff_pixels[di] = 255;
+                diff_pixels[di + 1] = 0;
+                diff_pixels[di + 2] = 0;
+                diff_pixels[di + 3] = 255;
+            } else {
+                // Same: dimmed baseline
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                {
+                    diff_pixels[di] = (f64::from(a[0]) * 0.3) as u8;
+                    diff_pixels[di + 1] = (f64::from(a[1]) * 0.3) as u8;
+                    diff_pixels[di + 2] = (f64::from(a[2]) * 0.3) as u8;
+                    diff_pixels[di + 3] = 255;
+                }
+            }
+        }
+    }
+
+    // Encode diff image as PNG
+    let diff_dir = crate::protocol::runtime_dir()
+        .ok_or_else(|| "cannot determine runtime dir".to_owned())?
+        .join("tmp")
+        .join("diffs");
+    tokio::fs::create_dir_all(&diff_dir)
+        .await
+        .map_err(|e| format!("mkdir: {e}"))?;
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let path = diff_dir.join(format!("diff-{ts}.png"));
+
+    let file = std::fs::File::create(&path).map_err(|e| format!("create file: {e}"))?;
+    let buf_writer = std::io::BufWriter::new(file);
+    let mut encoder = png::Encoder::new(buf_writer, w, h);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().map_err(|e| format!("png header: {e}"))?;
+    writer
+        .write_image_data(&diff_pixels)
+        .map_err(|e| format!("png write: {e}"))?;
+
+    Ok(path.to_string_lossy().into_owned())
 }
 
 // ---------------------------------------------------------------------------
@@ -976,11 +1069,28 @@ fn sessions_dir() -> Option<std::path::PathBuf> {
     crate::protocol::runtime_dir().map(|d| d.join("sessions"))
 }
 
+/// Validate a state name: only `[a-zA-Z0-9_-]` allowed.
+/// Prevents path traversal attacks (e.g. `"../../etc/passwd"`).
+fn validate_state_name(name: &str) -> Result<(), Response> {
+    if name == "*" {
+        return Ok(()); // wildcard is allowed for clear-all
+    }
+    if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+        return Err(Response::error(format!(
+            "invalid state name '{name}': only alphanumeric, hyphens, and underscores allowed"
+        )));
+    }
+    Ok(())
+}
+
 /// Save cookies + localStorage + sessionStorage to a named JSON file.
 pub(super) async fn cmd_state_save(
     state: &Arc<Mutex<DaemonState>>,
     name: &str,
 ) -> Response {
+    if let Err(r) = validate_state_name(name) {
+        return r;
+    }
     let page = match get_page(state).await {
         Ok(p) => p,
         Err(r) => return r,
@@ -1045,6 +1155,9 @@ pub(super) async fn cmd_state_load(
     state: &Arc<Mutex<DaemonState>>,
     name: &str,
 ) -> Response {
+    if let Err(r) = validate_state_name(name) {
+        return r;
+    }
     let Some(dir) = sessions_dir() else {
         return Response::error("cannot determine sessions directory");
     };
@@ -1133,6 +1246,9 @@ pub(super) async fn cmd_state_list() -> Response {
 
 /// Delete a saved state file (or all with `name = "*"`).
 pub(super) async fn cmd_state_clear(name: &str) -> Response {
+    if let Err(r) = validate_state_name(name) {
+        return r;
+    }
     let Some(dir) = sessions_dir() else {
         return Response::error("cannot determine sessions directory");
     };
@@ -1166,6 +1282,9 @@ pub(super) async fn cmd_state_clear(name: &str) -> Response {
 
 /// Show the contents of a saved state file.
 pub(super) async fn cmd_state_show(name: &str) -> Response {
+    if let Err(r) = validate_state_name(name) {
+        return r;
+    }
     let Some(dir) = sessions_dir() else {
         return Response::error("cannot determine sessions directory");
     };
@@ -1179,6 +1298,63 @@ pub(super) async fn cmd_state_show(name: &str) -> Response {
         Err(e) => return Response::error(format!("parse state '{name}': {e}")),
     };
     Response::ok_data(ResponseData::Eval { value: val })
+}
+
+/// Clean up state files older than `days` days.
+pub(super) async fn cmd_state_clean(days: u32) -> Response {
+    let Some(dir) = sessions_dir() else {
+        return Response::error("cannot determine sessions directory");
+    };
+    let max_age = Duration::from_secs(u64::from(days) * 86400);
+    let now = std::time::SystemTime::now();
+    let mut deleted = Vec::new();
+
+    if let Ok(mut rd) = tokio::fs::read_dir(&dir).await {
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let fname = entry.file_name().to_string_lossy().to_string();
+            if !std::path::Path::new(&fname)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+            {
+                continue;
+            }
+            if let Ok(meta) = entry.metadata().await
+                && let Ok(modified) = meta.modified()
+                && now.duration_since(modified).unwrap_or_default() > max_age
+            {
+                let _ = tokio::fs::remove_file(entry.path()).await;
+                if let Some(name) = fname.strip_suffix(".json") {
+                    deleted.push(name.to_owned());
+                }
+            }
+        }
+    }
+
+    let count = deleted.len();
+    Response::ok_data(ResponseData::Text {
+        text: format!("{count} expired state(s) cleaned"),
+    })
+}
+
+/// Rename a saved state file.
+pub(super) async fn cmd_state_rename(old_name: &str, new_name: &str) -> Response {
+    if let Err(r) = validate_state_name(old_name) {
+        return r;
+    }
+    if let Err(r) = validate_state_name(new_name) {
+        return r;
+    }
+    let Some(dir) = sessions_dir() else {
+        return Response::error("cannot determine sessions directory");
+    };
+    let old_path = dir.join(format!("{old_name}.json"));
+    let new_path = dir.join(format!("{new_name}.json"));
+    if let Err(e) = tokio::fs::rename(&old_path, &new_path).await {
+        return Response::error(format!("rename '{old_name}' → '{new_name}': {e}"));
+    }
+    Response::ok_data(ResponseData::Text {
+        text: format!("state renamed: {old_name} → {new_name}"),
+    })
 }
 
 /// Simple ISO-8601-ish timestamp without external crate.
@@ -1357,12 +1533,29 @@ pub(super) async fn cmd_profiler_stop(
 // ---------------------------------------------------------------------------
 
 /// Set allowed domain patterns for navigation security.
+///
+/// When domains are non-empty, injects an init script into every existing
+/// page that monkey-patches `WebSocket`, `EventSource`, and
+/// `navigator.sendBeacon` to block connections to non-allowed domains.
+/// Navigation checks are enforced in [`cmd_navigate`].
 pub(super) async fn cmd_set_allowed_domains(
     state: &Arc<Mutex<DaemonState>>,
     domains: Vec<String>,
 ) -> Response {
     let mut guard = state.lock().await;
     let count = domains.len();
+
+    // Inject init script into all existing pages so future navigations
+    // within those pages also get the filter.
+    if !domains.is_empty() {
+        let script = super::domain_filter::build_init_script(&domains);
+        for page in &guard.pages {
+            let _ = page.add_init_script(&script).await;
+            // Also run it immediately on the current document.
+            let _ = page.eval(&script).await;
+        }
+    }
+
     guard.allowed_domains = domains;
     Response::ok_data(ResponseData::Text {
         text: if count == 0 {

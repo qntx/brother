@@ -541,6 +541,10 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
         Request::StateList => super::handlers::cmd_state_list().await,
         Request::StateClear { name } => super::handlers::cmd_state_clear(&name).await,
         Request::StateShow { name } => super::handlers::cmd_state_show(&name).await,
+        Request::StateClean { days } => super::handlers::cmd_state_clean(days).await,
+        Request::StateRename { old_name, new_name } => {
+            super::handlers::cmd_state_rename(&old_name, &new_name).await
+        }
 
         // -- Debug / Tracing --------------------------------------------------
         Request::TraceStart { categories } => {

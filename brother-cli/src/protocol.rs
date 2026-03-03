@@ -720,6 +720,18 @@ pub enum Request {
         /// State name.
         name: String,
     },
+    /// Clean up state files older than N days.
+    StateClean {
+        /// Maximum age in days.
+        days: u32,
+    },
+    /// Rename a saved state.
+    StateRename {
+        /// Current name.
+        old_name: String,
+        /// New name.
+        new_name: String,
+    },
 
     // -- Debug / Tracing ----------------------------------------------------
     /// Start CDP tracing (Performance, devtools.timeline, etc.).
@@ -1029,6 +1041,8 @@ pub enum ResponseData {
     },
     /// Screenshot diff result.
     DiffScreenshot {
+        /// Path to the diff image PNG (red-highlighted differences).
+        diff_path: String,
         /// Total pixels compared.
         total_pixels: u64,
         /// Pixels that differ.

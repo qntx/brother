@@ -6,6 +6,7 @@
 //! launched on first command.
 
 mod dispatch;
+mod domain_filter;
 mod handlers;
 
 use std::sync::Arc;

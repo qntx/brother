@@ -400,6 +400,11 @@ pub fn build_request(cmd: &Command) -> Request {
             crate::commands::StateSub::List => Request::StateList,
             crate::commands::StateSub::Clear { name } => Request::StateClear { name: name.clone() },
             crate::commands::StateSub::Show { name } => Request::StateShow { name: name.clone() },
+            crate::commands::StateSub::Clean { days } => Request::StateClean { days: *days },
+            crate::commands::StateSub::Rename { old_name, new_name } => Request::StateRename {
+                old_name: old_name.clone(),
+                new_name: new_name.clone(),
+            },
         },
         Command::Trace {
             action,

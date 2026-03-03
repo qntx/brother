@@ -686,4 +686,16 @@ pub enum StateSub {
         /// State name.
         name: String,
     },
+    /// Clean up state files older than N days.
+    Clean {
+        /// Maximum age in days.
+        days: u32,
+    },
+    /// Rename a saved state.
+    Rename {
+        /// Current name.
+        old_name: String,
+        /// New name.
+        new_name: String,
+    },
 }
