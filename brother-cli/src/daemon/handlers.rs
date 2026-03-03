@@ -587,6 +587,85 @@ pub(super) async fn cmd_wait_for_download(
     }
 }
 
+/// Click an element and wait for the resulting download to complete.
+///
+/// Automatically sets up a temp download directory if none is configured.
+pub(super) async fn cmd_download(
+    state: &Arc<Mutex<DaemonState>>,
+    target: &str,
+    save_path: Option<&str>,
+    timeout_ms: u64,
+) -> Response {
+    // Ensure a download directory is configured.
+    {
+        let guard = state.lock().await;
+        if guard.download_path.is_none() {
+            drop(guard);
+            let tmp = std::env::temp_dir().join("brother-downloads");
+            let _ = tokio::fs::create_dir_all(&tmp).await;
+            let resp =
+                cmd_set_download_path(state, tmp.to_string_lossy().as_ref()).await;
+            if matches!(resp, Response::Error { .. }) {
+                return resp;
+            }
+        }
+    }
+
+    // Snapshot existing files before click.
+    let dl_dir = state.lock().await.download_path.clone().unwrap_or_default();
+    let before: std::collections::HashSet<String> = match tokio::fs::read_dir(&dl_dir).await {
+        Ok(mut dir) => {
+            let mut set = std::collections::HashSet::new();
+            while let Ok(Some(entry)) = dir.next_entry().await {
+                set.insert(entry.file_name().to_string_lossy().to_string());
+            }
+            set
+        }
+        Err(_) => std::collections::HashSet::new(),
+    };
+
+    // Click the element.
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    if let Err(e) = page.click(target).await {
+        return Response::error(e.ai_friendly(target).to_string());
+    }
+
+    // Wait for a new file to appear.
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        if tokio::time::Instant::now() > deadline {
+            return Response::error("download timed out");
+        }
+        if let Ok(mut dir) = tokio::fs::read_dir(&dl_dir).await {
+            while let Ok(Some(entry)) = dir.next_entry().await {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if std::path::Path::new(&name)
+                    .extension()
+                    .is_some_and(|e| e == "crdownload" || e == "tmp")
+                {
+                    continue;
+                }
+                if !before.contains(&name) {
+                    let src = std::path::Path::new(&dl_dir).join(&name);
+                    if let Some(dest) = save_path
+                        && let Err(e) = tokio::fs::copy(&src, dest).await
+                    {
+                        return Response::error(format!("copy download failed: {e}"));
+                    }
+                    let final_path = save_path.unwrap_or(&name);
+                    return Response::ok_data(ResponseData::Text {
+                        text: format!("downloaded: {final_path}"),
+                    });
+                }
+            }
+        }
+    }
+}
+
 /// Wait for a network response matching a URL pattern and return its body.
 pub(super) async fn cmd_response_body(
     state: &Arc<Mutex<DaemonState>>,

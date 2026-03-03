@@ -16,7 +16,48 @@ use super::{get_page, page_eval, page_ok, page_text, DaemonState};
 )]
 pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> Response {
     match req {
-        // -- Connection -------------------------------------------------------
+        // -- Launch / Connection ----------------------------------------------
+        Request::Launch {
+            headed,
+            proxy,
+            executable_path,
+            user_data_dir,
+            extra_args,
+            user_agent,
+            ignore_https_errors,
+            download_path,
+            viewport_width,
+            viewport_height,
+        } => {
+            let mut guard = state.lock().await;
+            if guard.browser.is_some() {
+                // Browser already running — ignore Launch, just return ok.
+                return Response::ok();
+            }
+            let mut config = brother::BrowserConfig::default()
+                .headless(!headed)
+                .ignore_https_errors(ignore_https_errors)
+                .viewport(viewport_width, viewport_height);
+            if let Some(p) = proxy {
+                config = config.proxy(p);
+            }
+            if let Some(ep) = executable_path {
+                config = config.executable(ep);
+            }
+            if let Some(ud) = user_data_dir {
+                config = config.user_data_dir(ud);
+            }
+            if let Some(ua) = user_agent {
+                config = config.user_agent(ua);
+            }
+            if let Some(dp) = download_path {
+                config = config.download_path(dp);
+            }
+            config.args = extra_args;
+            guard.launch_config = Some(config);
+            Response::ok()
+        }
+
         Request::Connect { target } => super::handlers::cmd_connect(state, &target).await,
 
         // -- Navigation -------------------------------------------------------
@@ -58,12 +99,46 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
             button,
             click_count,
             delay,
+            new_tab,
         } => {
-            page_ok!(
-                state,
-                &target,
-                click_with(&target, button, click_count, delay)
-            )
+            if new_tab {
+                // Ctrl+click to open in new tab, then switch to it.
+                let page = match get_page(state).await {
+                    Ok(p) => p,
+                    Err(r) => return r,
+                };
+                if let Err(e) = page.key_down("Control").await {
+                    return Response::error(e.to_string());
+                }
+                let click_result = page.click(&target).await;
+                let _ = page.key_up("Control").await;
+                if let Err(e) = click_result {
+                    return Response::error(e.ai_friendly(&target).to_string());
+                }
+                // Wait briefly for the new tab to appear, then switch.
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                let mut guard = state.lock().await;
+                if let Some(ref browser) = guard.browser {
+                    if let Ok(pages) = browser.pages().await {
+                        for p in pages {
+                            let url = p.url().await.unwrap_or_default();
+                            if !guard.pages.iter().any(|ep| {
+                                futures::executor::block_on(ep.url()).unwrap_or_default() == url
+                            }) {
+                                guard.pages.push(p);
+                            }
+                        }
+                    }
+                    guard.active_tab = guard.pages.len().saturating_sub(1);
+                }
+                Response::ok()
+            } else {
+                page_ok!(
+                    state,
+                    &target,
+                    click_with(&target, button, click_count, delay)
+                )
+            }
         }
         Request::DblClick { target } => page_ok!(state, &target, dblclick(&target)),
         Request::Fill { target, value } => page_ok!(state, &target, fill(&target, &value)),
@@ -156,6 +231,13 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
         Request::Downloads { action } => {
             super::handlers::cmd_downloads(state, action.as_deref()).await
         }
+        Request::Download {
+            target,
+            path,
+            timeout_ms,
+        } => {
+            super::handlers::cmd_download(state, &target, path.as_deref(), timeout_ms).await
+        }
         Request::WaitForDownload { path, timeout_ms } => {
             super::handlers::cmd_wait_for_download(state, path.as_deref(), timeout_ms).await
         }
@@ -167,7 +249,60 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
         Request::ClipboardRead => page_text!(state, clipboard_read()),
         Request::ClipboardWrite { text } => page_ok!(state, clipboard_write(&text)),
 
+        // -- Semantic locators -------------------------------------------------
+        Request::Find {
+            by,
+            value,
+            name,
+            exact,
+        } => {
+            let page = match get_page(state).await {
+                Ok(p) => p,
+                Err(r) => return r,
+            };
+            let result = match by.as_str() {
+                "role" => page.find_by_role(&value, name.as_deref()).await,
+                "text" => page.find_by_text(&value, exact).await,
+                "label" => page.find_by_label(&value).await,
+                "placeholder" => page.find_by_placeholder(&value).await,
+                "testid" => page.find_by_testid(&value).await,
+                _ => {
+                    return Response::error(format!(
+                        "unknown locator type '{by}'. Use: role, text, label, placeholder, testid"
+                    ))
+                }
+            };
+            match result {
+                Ok(val) => Response::ok_data(ResponseData::Eval { value: val }),
+                Err(e) => Response::error(e.to_string()),
+            }
+        }
+
         // -- Environment emulation --------------------------------------------
+        Request::Device { name } => {
+            let Some(preset) = brother::DevicePreset::lookup(&name) else {
+                let names = brother::DevicePreset::list_names().join(", ");
+                return Response::error(format!(
+                    "unknown device '{name}'. Available: {names}"
+                ));
+            };
+            let page = match get_page(state).await {
+                Ok(p) => p,
+                Err(r) => return r,
+            };
+            if let Err(e) = page.set_viewport(preset.width, preset.height).await {
+                return Response::error(e.to_string());
+            }
+            if let Err(e) = page.set_user_agent(preset.user_agent).await {
+                return Response::error(e.to_string());
+            }
+            Response::ok_data(ResponseData::Text {
+                text: format!(
+                    "emulating {} ({}x{}, {})",
+                    preset.name, preset.width, preset.height, preset.user_agent
+                ),
+            })
+        }
         Request::Viewport { width, height } => page_ok!(state, set_viewport(width, height)),
         Request::EmulateMedia {
             media,

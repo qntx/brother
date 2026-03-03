@@ -15,7 +15,42 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Request {
-    // -- Connection --------------------------------------------------------
+    // -- Launch / Connection -----------------------------------------------
+    /// Configure and launch the browser with specific options.
+    /// Must be sent before any other command. Ignored if browser is already running.
+    Launch {
+        /// Run in headed mode (show browser window). Default: false (headless).
+        #[serde(default)]
+        headed: bool,
+        /// Proxy server URL (e.g. `http://localhost:8080`).
+        #[serde(default)]
+        proxy: Option<String>,
+        /// Path to Chrome/Chromium executable.
+        #[serde(default)]
+        executable_path: Option<String>,
+        /// User data directory for persistent profiles.
+        #[serde(default)]
+        user_data_dir: Option<String>,
+        /// Additional Chrome launch arguments (comma-separated or repeated).
+        #[serde(default)]
+        extra_args: Vec<String>,
+        /// Custom user-agent string (applied at launch time).
+        #[serde(default)]
+        user_agent: Option<String>,
+        /// Ignore HTTPS/TLS certificate errors.
+        #[serde(default)]
+        ignore_https_errors: bool,
+        /// Default download directory.
+        #[serde(default)]
+        download_path: Option<String>,
+        /// Viewport width (default 1280).
+        #[serde(default = "default_viewport_width")]
+        viewport_width: u32,
+        /// Viewport height (default 720).
+        #[serde(default = "default_viewport_height")]
+        viewport_height: u32,
+    },
+
     /// Connect to an existing browser via CDP websocket URL or debugging port.
     Connect {
         /// CDP websocket URL (e.g. `ws://127.0.0.1:9222/...`), or just a port number.
@@ -80,6 +115,9 @@ pub enum Request {
         /// Delay in ms between mouse-down and mouse-up (0 = instant).
         #[serde(default)]
         delay: u64,
+        /// Click with Ctrl held to open link in a new tab.
+        #[serde(default)]
+        new_tab: bool,
     },
     /// Double-click an element.
     DblClick {
@@ -262,6 +300,17 @@ pub enum Request {
         #[serde(default)]
         action: Option<String>,
     },
+    /// Click an element and wait for the resulting download.
+    Download {
+        /// Ref or CSS selector of the element to click.
+        target: String,
+        /// Directory to save the downloaded file.
+        #[serde(default)]
+        path: Option<String>,
+        /// Timeout in milliseconds (default 30s).
+        #[serde(default = "default_timeout_ms")]
+        timeout_ms: u64,
+    },
     /// Wait for a download event and save the file.
     WaitForDownload {
         /// Optional path to save the downloaded file.
@@ -311,6 +360,27 @@ pub enum Request {
         /// Forced colors: `"active"`, `"none"`, or empty to reset.
         #[serde(default)]
         forced_colors: Option<String>,
+    },
+    // -- Semantic locators --------------------------------------------------
+    /// Find elements by semantic locator (role, text, label, placeholder, testid).
+    Find {
+        /// Locator type: `role`, `text`, `label`, `placeholder`, `testid`.
+        by: String,
+        /// Value to search for.
+        value: String,
+        /// Optional name filter (only for `role` locator).
+        #[serde(default)]
+        name: Option<String>,
+        /// Exact text match (only for `text` locator, default false).
+        #[serde(default)]
+        exact: bool,
+    },
+
+    // -- Device / Environment emulation ------------------------------------
+    /// Emulate a device preset (sets viewport + user-agent).
+    Device {
+        /// Device name (e.g. `iphone-14`, `pixel-7`, `ipad-pro`).
+        name: String,
     },
     /// Toggle offline mode.
     Offline {
@@ -632,6 +702,16 @@ pub enum RouteAction {
 // Defaults
 // ---------------------------------------------------------------------------
 
+/// Default viewport width.
+const fn default_viewport_width() -> u32 {
+    1280
+}
+
+/// Default viewport height.
+const fn default_viewport_height() -> u32 {
+    720
+}
+
 /// Default scroll distance in pixels.
 const fn default_scroll_px() -> i64 {
     500
@@ -863,14 +943,15 @@ pub fn runtime_dir() -> Option<std::path::PathBuf> {
     dirs::data_local_dir().map(|d| d.join("brother"))
 }
 
-/// Path to the daemon port file.
+/// Path to the daemon port file for a given session.
 #[must_use]
-pub fn port_file_path() -> Option<std::path::PathBuf> {
-    runtime_dir().map(|d| d.join("daemon.port"))
+pub fn port_file_path_for(session: &str) -> Option<std::path::PathBuf> {
+    runtime_dir().map(|d| d.join(format!("{session}.port")))
 }
 
-/// Path to the daemon PID file.
+/// Path to the daemon PID file for a given session.
 #[must_use]
-pub fn pid_file_path() -> Option<std::path::PathBuf> {
-    runtime_dir().map(|d| d.join("daemon.pid"))
+pub fn pid_file_path_for(session: &str) -> Option<std::path::PathBuf> {
+    runtime_dir().map(|d| d.join(format!("{session}.pid")))
 }
+

@@ -24,6 +24,8 @@ const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_mins(5);
 
 /// Shared state across connections.
 struct DaemonState {
+    /// Session name for port/pid file management.
+    session: String,
     browser: Option<Browser>,
     /// All open tabs (pages). Index 0 is the first tab opened.
     pages: Vec<Page>,
@@ -37,6 +39,8 @@ struct DaemonState {
     captured_requests: Vec<serde_json::Value>,
     /// Download directory path.
     download_path: Option<String>,
+    /// Pending launch configuration (set by `Launch` request before browser starts).
+    launch_config: Option<BrowserConfig>,
     last_activity: tokio::time::Instant,
 }
 
@@ -50,13 +54,14 @@ struct InterceptRoute {
     content_type: String,
 }
 
-/// Run the daemon server.
+/// Run the daemon server for a named session.
 ///
 /// # Errors
 ///
 /// Returns an error if binding or port-file I/O fails.
-pub async fn run(idle_timeout: Option<Duration>) -> brother::Result<()> {
+pub async fn run_session(session: &str, idle_timeout: Option<Duration>) -> brother::Result<()> {
     let timeout = idle_timeout.unwrap_or(DEFAULT_IDLE_TIMEOUT);
+    let session_name = session.to_owned();
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(|e| Error::Browser(format!("bind failed: {e}")))?;
@@ -65,11 +70,12 @@ pub async fn run(idle_timeout: Option<Duration>) -> brother::Result<()> {
         .local_addr()
         .map_err(|e| Error::Browser(format!("addr failed: {e}")))?;
 
-    write_port_file(addr.port()).await?;
-    write_pid_file().await?;
-    tracing::info!(port = addr.port(), "daemon listening");
+    write_port_file(&session_name, addr.port()).await?;
+    write_pid_file(&session_name).await?;
+    tracing::info!(port = addr.port(), session = %session_name, "daemon listening");
 
     let state = Arc::new(Mutex::new(DaemonState {
+        session: session_name.clone(),
         browser: None,
         pages: Vec::new(),
         active_tab: 0,
@@ -77,6 +83,7 @@ pub async fn run(idle_timeout: Option<Duration>) -> brother::Result<()> {
         routes: Vec::new(),
         captured_requests: Vec::new(),
         download_path: None,
+        launch_config: None,
         last_activity: tokio::time::Instant::now(),
     }));
 
@@ -112,7 +119,7 @@ pub async fn run(idle_timeout: Option<Duration>) -> brother::Result<()> {
         }
     }
 
-    cleanup_files().await;
+    cleanup_files(&session_name).await;
     let browser = state.lock().await.browser.take();
     if let Some(b) = browser {
         let _ = b.close().await;
@@ -145,7 +152,8 @@ async fn handle_connection(
                 let resp = dispatch::dispatch(req, &state).await;
                 if is_close {
                     send(&mut writer, &resp).await;
-                    cleanup_files().await;
+                    let session = state.lock().await.session.clone();
+                    cleanup_files(&session).await;
                     std::process::exit(0);
                 }
                 resp
@@ -254,7 +262,8 @@ pub(crate) use page_text;
 async fn ensure_browser(state: &Arc<Mutex<DaemonState>>) -> Result<(), Response> {
     let mut guard = state.lock().await;
     if guard.browser.is_none() {
-        match launch_browser(BrowserConfig::default()).await {
+        let config = guard.launch_config.take().unwrap_or_default();
+        match launch_browser(config).await {
             Ok((browser, page)) => {
                 guard.browser = Some(browser);
                 guard.pages = vec![page];
@@ -288,8 +297,8 @@ async fn get_page(state: &Arc<Mutex<DaemonState>>) -> Result<Page, Response> {
 // File helpers
 // ---------------------------------------------------------------------------
 
-async fn write_port_file(port: u16) -> brother::Result<()> {
-    let path = crate::protocol::port_file_path()
+async fn write_port_file(session: &str, port: u16) -> brother::Result<()> {
+    let path = crate::protocol::port_file_path_for(session)
         .ok_or_else(|| Error::Browser("cannot determine data dir".into()))?;
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
@@ -303,8 +312,8 @@ async fn write_port_file(port: u16) -> brother::Result<()> {
     Ok(())
 }
 
-async fn write_pid_file() -> brother::Result<()> {
-    let path = crate::protocol::pid_file_path()
+async fn write_pid_file(session: &str) -> brother::Result<()> {
+    let path = crate::protocol::pid_file_path_for(session)
         .ok_or_else(|| Error::Browser("cannot determine data dir".into()))?;
     tokio::fs::write(&path, std::process::id().to_string())
         .await
@@ -313,11 +322,11 @@ async fn write_pid_file() -> brother::Result<()> {
     Ok(())
 }
 
-async fn cleanup_files() {
-    if let Some(p) = crate::protocol::port_file_path() {
+async fn cleanup_files(session: &str) {
+    if let Some(p) = crate::protocol::port_file_path_for(session) {
         let _ = tokio::fs::remove_file(&p).await;
     }
-    if let Some(p) = crate::protocol::pid_file_path() {
+    if let Some(p) = crate::protocol::pid_file_path_for(session) {
         let _ = tokio::fs::remove_file(&p).await;
     }
 }

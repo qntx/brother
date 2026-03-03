@@ -12,7 +12,7 @@ pub fn build_request(cmd: &Command) -> Request {
             target: target.clone(),
         },
         Command::Open { url } => Request::Navigate {
-            url: url.clone(),
+            url: normalize_url(url),
             wait: WaitStrategy::Load,
         },
         Command::Snapshot {
@@ -37,11 +37,13 @@ pub fn build_request(cmd: &Command) -> Request {
             button,
             click_count,
             delay,
+            new_tab,
         } => Request::Click {
             target: target.clone(),
             button: parse_mouse_button(button),
             click_count: *click_count,
             delay: *delay,
+            new_tab: *new_tab,
         },
         Command::Dblclick { target } => Request::DblClick {
             target: target.clone(),
@@ -149,6 +151,18 @@ pub fn build_request(cmd: &Command) -> Request {
             function.as_deref(),
             *timeout,
         ),
+        Command::Find {
+            by,
+            value,
+            name,
+            exact,
+        } => Request::Find {
+            by: by.clone(),
+            value: value.clone(),
+            name: name.clone(),
+            exact: *exact,
+        },
+        Command::Device { name } => Request::Device { name: name.clone() },
         Command::Viewport { width, height } => Request::Viewport {
             width: *width,
             height: *height,
@@ -253,6 +267,15 @@ pub fn build_request(cmd: &Command) -> Request {
         Command::Downloads { action } => Request::Downloads {
             action: action.clone(),
         },
+        Command::DownloadClick {
+            target,
+            path,
+            timeout,
+        } => Request::Download {
+            target: target.clone(),
+            path: path.clone(),
+            timeout_ms: *timeout,
+        },
         Command::WaitForDownload { path, timeout } => Request::WaitForDownload {
             path: path.clone(),
             timeout_ms: *timeout,
@@ -315,21 +338,23 @@ pub fn build_request(cmd: &Command) -> Request {
                 session: *session,
             },
         },
-        Command::StateCheck { what, target } => match what.as_str() {
-            "enabled" => Request::IsEnabled {
-                target: target.clone(),
-            },
-            "checked" => Request::IsChecked {
-                target: target.clone(),
-            },
-            "count" => Request::Count {
-                selector: target.clone(),
-            },
-            // "visible" and any unknown variant default to IsVisible
-            _ => Request::IsVisible {
-                target: target.clone(),
-            },
-        },
+        Command::StateCheck { what, target } | Command::Is { what, target } => {
+            match what.as_str() {
+                "enabled" => Request::IsEnabled {
+                    target: target.clone(),
+                },
+                "checked" => Request::IsChecked {
+                    target: target.clone(),
+                },
+                "count" => Request::Count {
+                    selector: target.clone(),
+                },
+                // "visible" and any unknown variant default to IsVisible
+                _ => Request::IsVisible {
+                    target: target.clone(),
+                },
+            }
+        }
         Command::TabNew { url } => Request::TabNew { url: url.clone() },
         Command::TabList => Request::TabList,
         Command::TabSelect { index } => Request::TabSelect { index: *index },
@@ -438,4 +463,13 @@ fn build_wait_request(
         WaitCondition::Duration { ms: timeout }
     };
     Request::Wait { condition }
+}
+
+/// Auto-prepend `https://` if the URL has no scheme.
+fn normalize_url(url: &str) -> String {
+    if url.contains("://") || url.starts_with("data:") || url.starts_with("about:") {
+        url.to_owned()
+    } else {
+        format!("https://{url}")
+    }
 }

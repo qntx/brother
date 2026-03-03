@@ -119,6 +119,17 @@ impl BrowserConfig {
         self
     }
 
+    /// Apply a device preset (viewport + user-agent).
+    #[must_use]
+    pub fn device(mut self, name: &str) -> Self {
+        if let Some(preset) = DevicePreset::lookup(name) {
+            self.viewport_width = preset.width;
+            self.viewport_height = preset.height;
+            self.user_agent = Some(preset.user_agent.to_owned());
+        }
+        self
+    }
+
     /// Convert to `chromiumoxide::BrowserConfig`.
     pub(crate) fn into_chromium_config(self) -> crate::Result<chromiumoxide::BrowserConfig> {
         let mut builder = chromiumoxide::BrowserConfig::builder();
@@ -168,5 +179,95 @@ impl BrowserConfig {
         }
 
         builder.build().map_err(crate::Error::Browser)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Device presets
+// ---------------------------------------------------------------------------
+
+/// A named device preset with viewport dimensions and user-agent string.
+#[derive(Debug, Clone, Copy)]
+pub struct DevicePreset {
+    /// Device name.
+    pub name: &'static str,
+    /// Viewport width in pixels.
+    pub width: u32,
+    /// Viewport height in pixels.
+    pub height: u32,
+    /// User-agent string.
+    pub user_agent: &'static str,
+}
+
+/// All available device presets.
+pub const DEVICE_PRESETS: &[DevicePreset] = &[
+    DevicePreset {
+        name: "iphone-14",
+        width: 390,
+        height: 844,
+        user_agent: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+    },
+    DevicePreset {
+        name: "iphone-14-pro-max",
+        width: 430,
+        height: 932,
+        user_agent: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+    },
+    DevicePreset {
+        name: "pixel-7",
+        width: 412,
+        height: 915,
+        user_agent: "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
+    },
+    DevicePreset {
+        name: "ipad-pro",
+        width: 1024,
+        height: 1366,
+        user_agent: "Mozilla/5.0 (iPad; CPU OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Safari/604.1",
+    },
+    DevicePreset {
+        name: "ipad-mini",
+        width: 768,
+        height: 1024,
+        user_agent: "Mozilla/5.0 (iPad; CPU OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Safari/604.1",
+    },
+    DevicePreset {
+        name: "galaxy-s23",
+        width: 360,
+        height: 780,
+        user_agent: "Mozilla/5.0 (Linux; Android 13; SM-S911B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36",
+    },
+    DevicePreset {
+        name: "desktop-hd",
+        width: 1920,
+        height: 1080,
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    },
+    DevicePreset {
+        name: "desktop",
+        width: 1280,
+        height: 720,
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    },
+    DevicePreset {
+        name: "laptop",
+        width: 1366,
+        height: 768,
+        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    },
+];
+
+impl DevicePreset {
+    /// Look up a device preset by name (case-insensitive).
+    #[must_use]
+    pub fn lookup(name: &str) -> Option<&'static Self> {
+        let lower = name.to_ascii_lowercase();
+        DEVICE_PRESETS.iter().find(|d| d.name == lower)
+    }
+
+    /// List all available device preset names.
+    #[must_use]
+    pub fn list_names() -> Vec<&'static str> {
+        DEVICE_PRESETS.iter().map(|d| d.name).collect()
     }
 }

@@ -9,6 +9,7 @@ mod cookie_storage;
 mod dialog;
 mod dom;
 mod emulation;
+mod find;
 mod input;
 mod interaction;
 mod javascript;

@@ -46,6 +46,9 @@ pub enum Command {
         /// Delay in ms between mouse-down and mouse-up (0 = instant).
         #[arg(long, default_value = "0")]
         delay: u64,
+        /// Ctrl+click to open the link in a new tab.
+        #[arg(long)]
+        new_tab: bool,
     },
     /// Double-click an element.
     Dblclick {
@@ -182,9 +185,9 @@ pub enum Command {
     },
     /// Capture a screenshot.
     Screenshot {
-        /// Output file path.
-        #[arg(short, long, default_value = "screenshot.png")]
-        output: String,
+        /// Output file path (auto-generated if omitted).
+        #[arg(short, long)]
+        output: Option<String>,
         /// Capture the full scrollable page.
         #[arg(long)]
         full_page: bool,
@@ -247,6 +250,32 @@ pub enum Command {
         what: String,
         /// Ref or CSS selector.
         target: String,
+    },
+    /// Check element state (alias for `query`): visible, enabled, checked, count.
+    #[command(name = "is")]
+    Is {
+        /// What to check: `visible`, `enabled`, `checked`, `count`.
+        what: String,
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Find elements by semantic locator (role, text, label, placeholder, testid).
+    Find {
+        /// Locator type: `role`, `text`, `label`, `placeholder`, `testid`.
+        by: String,
+        /// Value to search for.
+        value: String,
+        /// Name filter (only for `role` locator).
+        #[arg(short, long)]
+        name: Option<String>,
+        /// Exact text match (only for `text` locator).
+        #[arg(long)]
+        exact: bool,
+    },
+    /// Emulate a device preset (viewport + user-agent).
+    Device {
+        /// Device name (e.g. `iphone-14`, `pixel-7`, `ipad-pro`, `desktop-hd`).
+        name: String,
     },
     /// Set viewport size.
     Viewport {
@@ -430,6 +459,18 @@ pub enum Command {
     Downloads {
         /// Optional: `clear` to clear the log.
         action: Option<String>,
+    },
+    /// Click an element and download the resulting file.
+    #[command(name = "download")]
+    DownloadClick {
+        /// Ref or CSS selector of the element to click.
+        target: String,
+        /// Path to save the downloaded file.
+        #[arg(short, long)]
+        path: Option<String>,
+        /// Timeout in ms (default 30000).
+        #[arg(short, long, default_value = "30000")]
+        timeout: u64,
     },
     /// Wait for a download to complete.
     WaitForDownload {

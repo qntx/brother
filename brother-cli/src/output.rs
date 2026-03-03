@@ -58,13 +58,20 @@ fn print_plain(cmd: &Command, data: Option<&ResponseData>) {
         }
         Some(ResponseData::Snapshot { tree, .. }) => println!("{tree}"),
         Some(ResponseData::Screenshot { data }) => {
-            if let Command::Screenshot { output, .. } = cmd {
+            if let Command::Screenshot { output, format, .. } = cmd {
+                let path = output.clone().unwrap_or_else(|| {
+                    let ext = if format == "jpeg" { "jpg" } else { "png" };
+                    let ts = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_millis());
+                    format!("screenshot-{ts}.{ext}")
+                });
                 match base64::engine::general_purpose::STANDARD.decode(data) {
                     Ok(bytes) => {
-                        if let Err(e) = std::fs::write(output, &bytes) {
+                        if let Err(e) = std::fs::write(&path, &bytes) {
                             eprintln!("error writing screenshot: {e}");
                         } else {
-                            println!("saved: {output} ({} bytes)", bytes.len());
+                            println!("saved: {path} ({} bytes)", bytes.len());
                         }
                     }
                     Err(e) => eprintln!("error decoding screenshot: {e}"),

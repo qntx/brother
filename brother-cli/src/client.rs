@@ -19,32 +19,32 @@ pub struct DaemonClient {
 }
 
 impl DaemonClient {
-    /// Connect to a running daemon, or start one if needed.
+    /// Connect to a running daemon for the given session, or start one if needed.
     ///
     /// # Errors
     ///
     /// Returns an error if the daemon cannot be reached or started.
-    pub async fn connect() -> anyhow::Result<Self> {
+    pub async fn connect_session(session: &str) -> anyhow::Result<Self> {
         // Try connecting to existing daemon first
-        if let Some(stream) = try_connect_existing().await {
+        if let Some(stream) = try_connect_existing(session).await {
             return Ok(Self {
                 stream: BufReader::new(stream),
             });
         }
 
         // No daemon running — start one
-        start_daemon()?;
+        start_daemon(session)?;
 
         // Wait for daemon to be ready (poll connection)
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         loop {
-            if let Some(stream) = try_connect_existing().await {
+            if let Some(stream) = try_connect_existing(session).await {
                 return Ok(Self {
                     stream: BufReader::new(stream),
                 });
             }
             if tokio::time::Instant::now() >= deadline {
-                anyhow::bail!("timeout waiting for daemon to start");
+                anyhow::bail!("timeout waiting for daemon to start (session: {session})");
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -87,25 +87,27 @@ impl DaemonClient {
 }
 
 /// Try to connect to an existing daemon by reading the port file.
-async fn try_connect_existing() -> Option<TcpStream> {
-    let port_file = protocol::port_file_path()?;
+async fn try_connect_existing(session: &str) -> Option<TcpStream> {
+    let port_file = protocol::port_file_path_for(session)?;
     let content = tokio::fs::read_to_string(&port_file).await.ok()?;
     let port: u16 = content.trim().parse().ok()?;
     TcpStream::connect(format!("127.0.0.1:{port}")).await.ok()
 }
 
-/// Start a daemon as a background process.
-fn start_daemon() -> anyhow::Result<()> {
+/// Start a daemon as a background process for the given session.
+fn start_daemon(session: &str) -> anyhow::Result<()> {
     let exe = std::env::current_exe()?;
 
     // Spawn the daemon as a detached process.
-    // The CLI binary should support a hidden "daemon" subcommand.
+    // Pass --session to the daemon so it uses session-specific port/pid files.
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         use std::process::Stdio;
         std::process::Command::new(&exe)
             .arg("daemon")
+            .arg("--session")
+            .arg(session)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -119,6 +121,8 @@ fn start_daemon() -> anyhow::Result<()> {
         use std::process::Stdio;
         std::process::Command::new(&exe)
             .arg("daemon")
+            .arg("--session")
+            .arg(session)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

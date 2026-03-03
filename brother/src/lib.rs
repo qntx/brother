@@ -33,7 +33,7 @@ mod page;
 mod snapshot;
 
 pub use browser::Browser;
-pub use config::BrowserConfig;
+pub use config::{BrowserConfig, DevicePreset, DEVICE_PRESETS};
 pub use error::{Error, Result};
 pub use page::{
     ConsoleEntry, CookieInput, DialogInfo, JsError, MouseButton, Page, ScrollDirection,
