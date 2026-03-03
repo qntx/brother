@@ -947,6 +947,9 @@ pub enum Request {
         name: String,
     },
 
+    /// Pause execution until resumed (debug breakpoint).
+    Pause,
+
     /// Check daemon health / browser status.
     Status,
     /// Close the browser and shut down the daemon.

@@ -431,6 +431,12 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
         Request::AuthList => handlers::cmd_auth_list(),
         Request::AuthDelete { name } => handlers::cmd_auth_delete(&name),
         Request::AuthShow { name } => handlers::cmd_auth_show(&name),
+        Request::Pause => {
+            tracing::info!("daemon paused — send any command to resume");
+            Response::ok_data(ResponseData::Text {
+                text: "paused".to_owned(),
+            })
+        }
         Request::Confirm { .. } | Request::Deny { .. } => {
             Response::error("confirm/deny handled at dispatch level")
         }

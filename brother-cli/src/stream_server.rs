@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use futures::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{Mutex, broadcast};
 use tokio_tungstenite::tungstenite::Message;
 
 use brother::RawMouseEvent;
@@ -64,7 +64,10 @@ impl Default for StreamServerConfig {
 pub async fn start(
     config: StreamServerConfig,
     state: Arc<Mutex<DaemonState>>,
-) -> std::io::Result<(broadcast::Sender<ScreencastFrame>, tokio::task::JoinHandle<()>)> {
+) -> std::io::Result<(
+    broadcast::Sender<ScreencastFrame>,
+    tokio::task::JoinHandle<()>,
+)> {
     let listener = TcpListener::bind(config.addr).await?;
     let (tx, _) = broadcast::channel::<ScreencastFrame>(16);
     let tx_clone = tx.clone();
@@ -227,9 +230,7 @@ async fn handle_input_message(text: &str, state: &Arc<Mutex<DaemonState>>) {
 /// WebSocket handshake callback that checks the Origin header.
 struct OriginCheck(Arc<Vec<String>>);
 
-impl tokio_tungstenite::tungstenite::handshake::server::Callback
-    for OriginCheck
-{
+impl tokio_tungstenite::tungstenite::handshake::server::Callback for OriginCheck {
     fn on_request(
         self,
         request: &tokio_tungstenite::tungstenite::http::Request<()>,
@@ -249,8 +250,9 @@ impl tokio_tungstenite::tungstenite::handshake::server::Callback
         if self.0.iter().any(|allowed| allowed == origin) {
             Ok(response)
         } else {
-            let mut resp =
-                tokio_tungstenite::tungstenite::http::Response::new(Some("origin not allowed".into()));
+            let mut resp = tokio_tungstenite::tungstenite::http::Response::new(Some(
+                "origin not allowed".into(),
+            ));
             *resp.status_mut() = tokio_tungstenite::tungstenite::http::StatusCode::FORBIDDEN;
             Err(resp)
         }

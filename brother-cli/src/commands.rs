@@ -616,6 +616,9 @@ pub enum Command {
         id: String,
     },
 
+    /// Pause daemon execution (debug breakpoint).
+    Pause,
+
     /// Save/load browser state (cookies + storage).
     #[command(subcommand)]
     State(StateSub),

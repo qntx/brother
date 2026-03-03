@@ -431,6 +431,7 @@ pub fn build_request(cmd: Command) -> Request {
                 modifiers,
             },
         },
+        Command::Pause => Request::Pause,
         Command::Auth(sub) => match sub {
             AuthSub::Save {
                 name,
