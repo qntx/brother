@@ -137,6 +137,31 @@ fn print_plain(cmd: &Command, data: Option<&ResponseData>) {
                 }
             }
         }
+        Some(ResponseData::DiffSnapshot {
+            diff,
+            summary,
+            added,
+            removed,
+            ..
+        }) => {
+            if *added == 0 && *removed == 0 {
+                println!("(no changes)");
+            } else {
+                println!("{diff}---\n{summary}");
+            }
+        }
+        Some(ResponseData::DiffScreenshot { summary, .. }) => {
+            println!("{summary}");
+        }
+        Some(ResponseData::StateList { states }) => {
+            if states.is_empty() {
+                println!("(no saved states)");
+            } else {
+                for s in states {
+                    println!("  {s}");
+                }
+            }
+        }
         None => println!("ok"),
     }
 }

@@ -676,6 +676,84 @@ pub enum Request {
         clear: bool,
     },
 
+    // -- Diff --------------------------------------------------------------
+    /// Compare the current accessibility snapshot against a baseline text.
+    DiffSnapshot {
+        /// Baseline snapshot text to compare against.
+        baseline: String,
+        /// Snapshot options for the *current* snapshot.
+        #[serde(default)]
+        options: SnapshotOptions,
+    },
+    /// Compare the current screenshot against a baseline (base64-encoded PNG).
+    DiffScreenshot {
+        /// Base64-encoded PNG of the baseline screenshot.
+        baseline: String,
+        /// Per-channel pixel threshold (0–255). Default: 10.
+        #[serde(default = "default_diff_threshold")]
+        threshold: u8,
+        /// Take a full-page screenshot for the current state.
+        #[serde(default)]
+        full_page: bool,
+    },
+
+    // -- State persistence --------------------------------------------------
+    /// Save current browser state (cookies + storage) to a named file.
+    StateSave {
+        /// State name (file will be `<name>.json` in `~/.brother/sessions/`).
+        name: String,
+    },
+    /// Load previously saved browser state.
+    StateLoad {
+        /// State name to load.
+        name: String,
+    },
+    /// List all saved states.
+    StateList,
+    /// Delete a saved state (or all with `name = "*"`).
+    StateClear {
+        /// State name to delete, or `"*"` for all.
+        name: String,
+    },
+    /// Show the contents of a saved state file.
+    StateShow {
+        /// State name.
+        name: String,
+    },
+
+    // -- Debug / Tracing ----------------------------------------------------
+    /// Start CDP tracing (Performance, devtools.timeline, etc.).
+    TraceStart {
+        /// Tracing categories (comma-separated). Default: standard set.
+        #[serde(default)]
+        categories: Vec<String>,
+    },
+    /// Stop CDP tracing and return the trace data.
+    TraceStop {
+        /// Optional file path to write the trace JSON.
+        #[serde(default)]
+        path: Option<String>,
+    },
+    /// Start CDP Profiler.
+    ProfilerStart {
+        /// Tracing categories for the profiler.
+        #[serde(default)]
+        categories: Vec<String>,
+    },
+    /// Stop CDP Profiler and return the profile.
+    ProfilerStop {
+        /// Optional file path to write the profile JSON.
+        #[serde(default)]
+        path: Option<String>,
+    },
+
+    // -- Security -----------------------------------------------------------
+    /// Set allowed domains — navigation to other domains will be blocked.
+    SetAllowedDomains {
+        /// List of allowed domain patterns (e.g. `["example.com", "*.github.com"]`).
+        domains: Vec<String>,
+    },
+
     // -- Lifecycle ---------------------------------------------------------
     /// Check daemon health / browser status.
     Status,
@@ -710,6 +788,11 @@ const fn default_viewport_width() -> u32 {
 /// Default viewport height.
 const fn default_viewport_height() -> u32 {
     720
+}
+
+/// Default pixel diff threshold.
+const fn default_diff_threshold() -> u8 {
+    10
 }
 
 /// Default scroll distance in pixels.
@@ -930,6 +1013,37 @@ pub enum ResponseData {
         tabs: serde_json::Value,
         /// Currently active tab index.
         active: usize,
+    },
+    /// Snapshot diff result.
+    DiffSnapshot {
+        /// Unified diff text.
+        diff: String,
+        /// Lines added.
+        added: usize,
+        /// Lines removed.
+        removed: usize,
+        /// Lines unchanged.
+        unchanged: usize,
+        /// Human-readable summary.
+        summary: String,
+    },
+    /// Screenshot diff result.
+    DiffScreenshot {
+        /// Total pixels compared.
+        total_pixels: u64,
+        /// Pixels that differ.
+        diff_pixels: u64,
+        /// Percentage that differ.
+        diff_percentage: f64,
+        /// Whether sizes mismatch.
+        size_mismatch: bool,
+        /// Human-readable summary.
+        summary: String,
+    },
+    /// List of saved state names.
+    StateList {
+        /// State names.
+        states: Vec<String>,
     },
 }
 

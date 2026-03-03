@@ -28,6 +28,7 @@
 
 mod browser;
 mod config;
+pub mod diff;
 mod error;
 mod page;
 mod snapshot;
@@ -38,4 +39,5 @@ pub use error::{Error, Result};
 pub use page::{
     ConsoleEntry, CookieInput, DialogInfo, JsError, MouseButton, Page, ScrollDirection,
 };
+pub use diff::{diff_rgba, diff_snapshots, ScreenshotDiff, SnapshotDiff};
 pub use snapshot::{Ref, RefMap, Snapshot, SnapshotOptions};

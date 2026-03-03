@@ -525,6 +525,42 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
             })
         }
 
+        // -- Diff -------------------------------------------------------------
+        Request::DiffSnapshot { baseline, options } => {
+            super::handlers::cmd_diff_snapshot(state, &baseline, options).await
+        }
+        Request::DiffScreenshot {
+            baseline,
+            threshold,
+            full_page,
+        } => super::handlers::cmd_diff_screenshot(state, &baseline, threshold, full_page).await,
+
+        // -- State persistence ------------------------------------------------
+        Request::StateSave { name } => super::handlers::cmd_state_save(state, &name).await,
+        Request::StateLoad { name } => super::handlers::cmd_state_load(state, &name).await,
+        Request::StateList => super::handlers::cmd_state_list().await,
+        Request::StateClear { name } => super::handlers::cmd_state_clear(&name).await,
+        Request::StateShow { name } => super::handlers::cmd_state_show(&name).await,
+
+        // -- Debug / Tracing --------------------------------------------------
+        Request::TraceStart { categories } => {
+            super::handlers::cmd_trace_start(state, &categories).await
+        }
+        Request::TraceStop { path } => {
+            super::handlers::cmd_trace_stop(state, path.as_deref()).await
+        }
+        Request::ProfilerStart { categories } => {
+            super::handlers::cmd_profiler_start(state, &categories).await
+        }
+        Request::ProfilerStop { path } => {
+            super::handlers::cmd_profiler_stop(state, path.as_deref()).await
+        }
+
+        // -- Security ---------------------------------------------------------
+        Request::SetAllowedDomains { domains } => {
+            super::handlers::cmd_set_allowed_domains(state, domains).await
+        }
+
         // -- Lifecycle --------------------------------------------------------
         Request::Status => {
             let guard = state.lock().await;

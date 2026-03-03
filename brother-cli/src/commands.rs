@@ -574,6 +574,51 @@ pub enum Command {
         #[arg(long)]
         clear: bool,
     },
+    // -- Diff --------------------------------------------------------------
+    /// Compare current snapshot against a baseline file or text.
+    #[command(name = "diff")]
+    DiffSnapshot {
+        /// Subcommand: `snapshot` or `screenshot`.
+        #[command(subcommand)]
+        sub: DiffSub,
+    },
+
+    // -- State persistence --------------------------------------------------
+    /// Save/load browser state (cookies + storage).
+    #[command(subcommand)]
+    State(StateSub),
+
+    // -- Debug / Tracing --------------------------------------------------
+    /// Start or stop CDP tracing.
+    Trace {
+        /// `start` or `stop`.
+        action: String,
+        /// Tracing categories (comma-separated).
+        #[arg(short, long)]
+        categories: Option<String>,
+        /// File path to write trace output (stop only).
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Start or stop CDP Profiler.
+    Profiler {
+        /// `start` or `stop`.
+        action: String,
+        /// Tracing categories (comma-separated).
+        #[arg(short, long)]
+        categories: Option<String>,
+        /// File path to write profile output (stop only).
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+
+    // -- Security ---------------------------------------------------------
+    /// Set allowed domains for navigation (security filter).
+    AllowedDomains {
+        /// Domain patterns (e.g. `example.com *.github.com`).
+        domains: Vec<String>,
+    },
+
     /// Check daemon and browser status.
     Status,
     /// Close the browser and stop the daemon.
@@ -581,4 +626,64 @@ pub enum Command {
     /// (Hidden) Run the daemon server.
     #[command(hide = true)]
     Daemon,
+}
+
+/// Diff subcommands.
+#[derive(Debug, Clone, clap::Subcommand)]
+pub enum DiffSub {
+    /// Compare accessibility snapshots.
+    Snapshot {
+        /// Path to baseline snapshot file.
+        /// If omitted, reads from stdin.
+        #[arg(short, long)]
+        baseline: Option<String>,
+
+        /// Show only interactive elements in the current snapshot.
+        #[arg(short, long)]
+        interactive: bool,
+
+        /// Compact output (skip structural containers).
+        #[arg(short, long)]
+        compact: bool,
+    },
+    /// Compare screenshots pixel-by-pixel.
+    Screenshot {
+        /// Path to baseline screenshot PNG file.
+        baseline: String,
+
+        /// Per-channel pixel threshold (0–255).
+        #[arg(short, long, default_value = "10")]
+        threshold: u8,
+
+        /// Full-page screenshot.
+        #[arg(short, long)]
+        full_page: bool,
+    },
+}
+
+/// State management subcommands.
+#[derive(Debug, Clone, clap::Subcommand)]
+pub enum StateSub {
+    /// Save cookies + localStorage + sessionStorage to a named file.
+    Save {
+        /// State name.
+        name: String,
+    },
+    /// Load a previously saved state.
+    Load {
+        /// State name.
+        name: String,
+    },
+    /// List all saved states.
+    List,
+    /// Delete a saved state (use `*` to delete all).
+    Clear {
+        /// State name or `*` for all.
+        name: String,
+    },
+    /// Show the contents of a saved state.
+    Show {
+        /// State name.
+        name: String,
+    },
 }

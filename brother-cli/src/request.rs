@@ -361,6 +361,79 @@ pub fn build_request(cmd: &Command) -> Request {
         Command::TabClose { index } => Request::TabClose { index: *index },
         Command::Console { clear } => Request::Console { clear: *clear },
         Command::Errors { clear } => Request::Errors { clear: *clear },
+        Command::DiffSnapshot { sub } => match sub {
+            crate::commands::DiffSub::Snapshot {
+                baseline,
+                interactive,
+                compact,
+            } => {
+                let baseline_text = baseline
+                    .as_ref()
+                    .and_then(|p| std::fs::read_to_string(p).ok())
+                    .unwrap_or_default();
+                let opts = brother::SnapshotOptions::default()
+                    .interactive_only(*interactive)
+                    .compact(*compact);
+                Request::DiffSnapshot {
+                    baseline: baseline_text,
+                    options: opts,
+                }
+            }
+            crate::commands::DiffSub::Screenshot {
+                baseline,
+                threshold,
+                full_page,
+            } => {
+                let baseline_b64 = std::fs::read(baseline)
+                    .map(|bytes| base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes))
+                    .unwrap_or_default();
+                Request::DiffScreenshot {
+                    baseline: baseline_b64,
+                    threshold: *threshold,
+                    full_page: *full_page,
+                }
+            }
+        },
+        Command::State(sub) => match sub {
+            crate::commands::StateSub::Save { name } => Request::StateSave { name: name.clone() },
+            crate::commands::StateSub::Load { name } => Request::StateLoad { name: name.clone() },
+            crate::commands::StateSub::List => Request::StateList,
+            crate::commands::StateSub::Clear { name } => Request::StateClear { name: name.clone() },
+            crate::commands::StateSub::Show { name } => Request::StateShow { name: name.clone() },
+        },
+        Command::Trace {
+            action,
+            categories,
+            output,
+        } => match action.as_str() {
+            "stop" => Request::TraceStop {
+                path: output.clone(),
+            },
+            _ => Request::TraceStart {
+                categories: categories
+                    .as_deref()
+                    .map(|c| c.split(',').map(|s| s.trim().to_owned()).collect())
+                    .unwrap_or_default(),
+            },
+        },
+        Command::Profiler {
+            action,
+            categories,
+            output,
+        } => match action.as_str() {
+            "stop" => Request::ProfilerStop {
+                path: output.clone(),
+            },
+            _ => Request::ProfilerStart {
+                categories: categories
+                    .as_deref()
+                    .map(|c| c.split(',').map(|s| s.trim().to_owned()).collect())
+                    .unwrap_or_default(),
+            },
+        },
+        Command::AllowedDomains { domains } => Request::SetAllowedDomains {
+            domains: domains.clone(),
+        },
         Command::Status | Command::Daemon => Request::Status,
         Command::Close => Request::Close,
     }

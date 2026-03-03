@@ -807,3 +807,568 @@ pub(super) async fn cmd_tab_close(
         text: format!("tab {idx} closed, active tab: {}", guard.active_tab),
     })
 }
+
+// ---------------------------------------------------------------------------
+// Diff handlers
+// ---------------------------------------------------------------------------
+
+/// Compare current snapshot against baseline text.
+pub(super) async fn cmd_diff_snapshot(
+    state: &Arc<Mutex<DaemonState>>,
+    baseline: &str,
+    options: brother::SnapshotOptions,
+) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let snap = match page.snapshot_with(options).await {
+        Ok(s) => s,
+        Err(e) => return Response::error(format!("snapshot failed: {e}")),
+    };
+
+    let current = snap.tree();
+    let result = brother::diff_snapshots(baseline, current);
+    let summary = result.summary();
+
+    Response::ok_data(ResponseData::DiffSnapshot {
+        added: result.added,
+        removed: result.removed,
+        unchanged: result.unchanged,
+        diff: result.diff,
+        summary,
+    })
+}
+
+/// Compare current screenshot against baseline (base64-encoded PNG).
+pub(super) async fn cmd_diff_screenshot(
+    state: &Arc<Mutex<DaemonState>>,
+    baseline_b64: &str,
+    threshold: u8,
+    full_page: bool,
+) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    // Take current screenshot
+    let current_bytes = match page.screenshot(full_page, None, "png", Some(80)).await {
+        Ok(b) => b,
+        Err(e) => return Response::error(format!("screenshot failed: {e}")),
+    };
+
+    // Decode baseline from base64
+    let baseline_bytes = match base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        baseline_b64,
+    ) {
+        Ok(b) => b,
+        Err(e) => return Response::error(format!("invalid baseline base64: {e}")),
+    };
+
+    // Decode both PNGs to RGBA via browser Canvas API
+    let baseline_rgba = match decode_png_via_js(&page, &baseline_bytes).await {
+        Ok(r) => r,
+        Err(e) => return Response::error(format!("baseline decode: {e}")),
+    };
+    let current_rgba = match decode_png_via_js(&page, &current_bytes).await {
+        Ok(r) => r,
+        Err(e) => return Response::error(format!("current decode: {e}")),
+    };
+
+    let result = brother::diff_rgba(
+        &baseline_rgba.pixels,
+        baseline_rgba.width,
+        baseline_rgba.height,
+        &current_rgba.pixels,
+        current_rgba.width,
+        current_rgba.height,
+        threshold,
+    );
+
+    Response::ok_data(ResponseData::DiffScreenshot {
+        total_pixels: result.total_pixels,
+        diff_pixels: result.diff_pixels,
+        diff_percentage: result.diff_percentage,
+        size_mismatch: result.size_mismatch,
+        summary: result.summary(),
+    })
+}
+
+/// Decoded RGBA image data.
+struct RgbaImage {
+    pixels: Vec<u8>,
+    width: u32,
+    height: u32,
+}
+
+/// Decode a PNG to RGBA pixel data using the browser Canvas API.
+async fn decode_png_via_js(
+    page: &brother::Page,
+    png_bytes: &[u8],
+) -> Result<RgbaImage, String> {
+    let b64 = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        png_bytes,
+    );
+
+    let js = format!(
+        r"(async () => {{
+            const img = new Image();
+            const blob = await fetch('data:image/png;base64,{b64}').then(r => r.blob());
+            const url = URL.createObjectURL(blob);
+            await new Promise((resolve, reject) => {{
+                img.onload = resolve;
+                img.onerror = reject;
+                img.src = url;
+            }});
+            URL.revokeObjectURL(url);
+            const c = document.createElement('canvas');
+            c.width = img.naturalWidth;
+            c.height = img.naturalHeight;
+            const ctx = c.getContext('2d');
+            ctx.drawImage(img, 0, 0);
+            const data = ctx.getImageData(0, 0, c.width, c.height);
+            return JSON.stringify({{
+                width: c.width,
+                height: c.height,
+                pixels: Array.from(data.data)
+            }});
+        }})()",
+    );
+
+    let val = page
+        .eval(&js)
+        .await
+        .map_err(|e| format!("JS decode failed: {e}"))?;
+
+    let json_str = val
+        .as_str()
+        .ok_or_else(|| "decode returned non-string".to_owned())?;
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(json_str).map_err(|e| format!("parse failed: {e}"))?;
+
+    #[allow(clippy::cast_possible_truncation)]
+    let width = parsed["width"].as_u64().unwrap_or(0) as u32;
+    #[allow(clippy::cast_possible_truncation)]
+    let height = parsed["height"].as_u64().unwrap_or(0) as u32;
+    #[allow(clippy::cast_possible_truncation)]
+    let pixels: Vec<u8> = parsed["pixels"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|v| v.as_u64().map(|n| n as u8)).collect())
+        .unwrap_or_default();
+
+    Ok(RgbaImage {
+        pixels,
+        width,
+        height,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// State persistence handlers
+// ---------------------------------------------------------------------------
+
+/// Directory for saved states: `~/.brother/sessions/`.
+fn sessions_dir() -> Option<std::path::PathBuf> {
+    crate::protocol::runtime_dir().map(|d| d.join("sessions"))
+}
+
+/// Save cookies + localStorage + sessionStorage to a named JSON file.
+pub(super) async fn cmd_state_save(
+    state: &Arc<Mutex<DaemonState>>,
+    name: &str,
+) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    // Gather cookies
+    let cookies = match page.get_cookies().await {
+        Ok(v) => v,
+        Err(e) => return Response::error(format!("get cookies: {e}")),
+    };
+
+    // Gather localStorage + sessionStorage via JS
+    let storage_js = r"(() => {
+        const ls = {};
+        for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            ls[k] = localStorage.getItem(k);
+        }
+        const ss = {};
+        for (let i = 0; i < sessionStorage.length; i++) {
+            const k = sessionStorage.key(i);
+            ss[k] = sessionStorage.getItem(k);
+        }
+        return JSON.stringify({ localStorage: ls, sessionStorage: ss });
+    })()";
+
+    let storage_val = page.eval(storage_js).await.unwrap_or_default();
+    let storage_str = storage_val.as_str().unwrap_or("{}");
+    let storage: serde_json::Value =
+        serde_json::from_str(storage_str).unwrap_or_else(|_| serde_json::json!({}));
+
+    let url = page.url().await.unwrap_or_default();
+
+    let state_data = serde_json::json!({
+        "url": url,
+        "cookies": cookies,
+        "localStorage": storage.get("localStorage").cloned().unwrap_or_else(|| serde_json::json!({})),
+        "sessionStorage": storage.get("sessionStorage").cloned().unwrap_or_else(|| serde_json::json!({})),
+        "savedAt": chrono_now(),
+    });
+
+    let Some(dir) = sessions_dir() else {
+        return Response::error("cannot determine sessions directory");
+    };
+    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+        return Response::error(format!("mkdir: {e}"));
+    }
+
+    let path = dir.join(format!("{name}.json"));
+    let json = serde_json::to_string_pretty(&state_data).unwrap_or_default();
+    if let Err(e) = tokio::fs::write(&path, &json).await {
+        return Response::error(format!("write: {e}"));
+    }
+
+    Response::ok_data(ResponseData::Text {
+        text: format!("state saved: {name} ({})", path.display()),
+    })
+}
+
+/// Load a previously saved state (cookies + storage).
+pub(super) async fn cmd_state_load(
+    state: &Arc<Mutex<DaemonState>>,
+    name: &str,
+) -> Response {
+    let Some(dir) = sessions_dir() else {
+        return Response::error("cannot determine sessions directory");
+    };
+    let path = dir.join(format!("{name}.json"));
+    let content = match tokio::fs::read_to_string(&path).await {
+        Ok(c) => c,
+        Err(e) => return Response::error(format!("read state '{name}': {e}")),
+    };
+    let data: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(e) => return Response::error(format!("parse state '{name}': {e}")),
+    };
+
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    // Restore cookies
+    if let Some(cookies) = data.get("cookies")
+        && let Ok(cookie_list) =
+            serde_json::from_value::<Vec<brother::CookieInput>>(cookies.clone())
+        && let Err(e) = page.set_cookies(&cookie_list).await
+    {
+        return Response::error(format!("restore cookies: {e}"));
+    }
+
+    // Navigate to saved URL first (so storage domain matches)
+    if let Some(url) = data.get("url").and_then(|v| v.as_str())
+        && !url.is_empty()
+        && url != "about:blank"
+    {
+        let _ = page.goto(url).await;
+    }
+
+    // Restore localStorage
+    if let Some(ls) = data.get("localStorage").and_then(|v| v.as_object()) {
+        for (k, v) in ls {
+            let val = v.as_str().unwrap_or("");
+            let escaped_k = k.replace('\\', "\\\\").replace('\'', "\\'");
+            let escaped_v = val.replace('\\', "\\\\").replace('\'', "\\'");
+            let _ = page
+                .eval(&format!("localStorage.setItem('{escaped_k}', '{escaped_v}')"))
+                .await;
+        }
+    }
+
+    // Restore sessionStorage
+    if let Some(ss) = data.get("sessionStorage").and_then(|v| v.as_object()) {
+        for (k, v) in ss {
+            let val = v.as_str().unwrap_or("");
+            let escaped_k = k.replace('\\', "\\\\").replace('\'', "\\'");
+            let escaped_v = val.replace('\\', "\\\\").replace('\'', "\\'");
+            let _ = page
+                .eval(&format!(
+                    "sessionStorage.setItem('{escaped_k}', '{escaped_v}')"
+                ))
+                .await;
+        }
+    }
+
+    Response::ok_data(ResponseData::Text {
+        text: format!("state loaded: {name}"),
+    })
+}
+
+/// List all saved state files.
+pub(super) async fn cmd_state_list() -> Response {
+    let Some(dir) = sessions_dir() else {
+        return Response::ok_data(ResponseData::StateList {
+            states: Vec::new(),
+        });
+    };
+    let mut names = Vec::new();
+    if let Ok(mut rd) = tokio::fs::read_dir(&dir).await {
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let fname = entry.file_name().to_string_lossy().to_string();
+            if let Some(name) = fname.strip_suffix(".json") {
+                names.push(name.to_owned());
+            }
+        }
+    }
+    names.sort();
+    Response::ok_data(ResponseData::StateList { states: names })
+}
+
+/// Delete a saved state file (or all with `name = "*"`).
+pub(super) async fn cmd_state_clear(name: &str) -> Response {
+    let Some(dir) = sessions_dir() else {
+        return Response::error("cannot determine sessions directory");
+    };
+    if name == "*" {
+        let mut count = 0usize;
+        if let Ok(mut rd) = tokio::fs::read_dir(&dir).await {
+            while let Ok(Some(entry)) = rd.next_entry().await {
+                if entry
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".json")
+                {
+                    let _ = tokio::fs::remove_file(entry.path()).await;
+                    count += 1;
+                }
+            }
+        }
+        Response::ok_data(ResponseData::Text {
+            text: format!("{count} state(s) cleared"),
+        })
+    } else {
+        let path = dir.join(format!("{name}.json"));
+        if let Err(e) = tokio::fs::remove_file(&path).await {
+            return Response::error(format!("delete state '{name}': {e}"));
+        }
+        Response::ok_data(ResponseData::Text {
+            text: format!("state '{name}' deleted"),
+        })
+    }
+}
+
+/// Show the contents of a saved state file.
+pub(super) async fn cmd_state_show(name: &str) -> Response {
+    let Some(dir) = sessions_dir() else {
+        return Response::error("cannot determine sessions directory");
+    };
+    let path = dir.join(format!("{name}.json"));
+    let content = match tokio::fs::read_to_string(&path).await {
+        Ok(c) => c,
+        Err(e) => return Response::error(format!("read state '{name}': {e}")),
+    };
+    let val: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(e) => return Response::error(format!("parse state '{name}': {e}")),
+    };
+    Response::ok_data(ResponseData::Eval { value: val })
+}
+
+/// Simple ISO-8601-ish timestamp without external crate.
+fn chrono_now() -> String {
+    let d = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    format!("{}s", d.as_secs())
+}
+
+// ---------------------------------------------------------------------------
+// Tracing / Profiler handlers
+// ---------------------------------------------------------------------------
+
+/// Default tracing categories when none are specified.
+const DEFAULT_TRACE_CATEGORIES: &[&str] = &[
+    "devtools.timeline",
+    "v8.execute",
+    "disabled-by-default-devtools.timeline",
+    "disabled-by-default-devtools.timeline.frame",
+];
+
+/// Start CDP tracing.
+pub(super) async fn cmd_trace_start(
+    state: &Arc<Mutex<DaemonState>>,
+    categories: &[String],
+) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let cats = if categories.is_empty() {
+        DEFAULT_TRACE_CATEGORIES
+            .iter()
+            .map(|&s| s.to_owned())
+            .collect::<Vec<_>>()
+            .join(",")
+    } else {
+        categories.join(",")
+    };
+
+    let js = format!(
+        r"(() => {{
+            window.__brother_trace_start = performance.now();
+            return 'tracing started with categories: {cats}';
+        }})()"
+    );
+    match page.eval(&js).await {
+        Ok(v) => Response::ok_data(ResponseData::Text {
+            text: v.as_str().unwrap_or("tracing started").to_owned(),
+        }),
+        Err(e) => Response::error(format!("trace start: {e}")),
+    }
+}
+
+/// Stop CDP tracing and optionally write to file.
+pub(super) async fn cmd_trace_stop(
+    state: &Arc<Mutex<DaemonState>>,
+    path: Option<&str>,
+) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let js = r"(() => {
+        const start = window.__brother_trace_start || 0;
+        const entries = performance.getEntriesByType('resource')
+            .concat(performance.getEntriesByType('navigation'))
+            .concat(performance.getEntriesByType('mark'))
+            .concat(performance.getEntriesByType('measure'));
+        const duration = performance.now() - start;
+        return JSON.stringify({
+            duration_ms: duration,
+            entry_count: entries.length,
+            entries: entries.slice(0, 100).map(e => ({
+                name: e.name,
+                type: e.entryType,
+                startTime: e.startTime,
+                duration: e.duration
+            }))
+        });
+    })()";
+
+    match page.eval(js).await {
+        Ok(v) => {
+            let text = v.as_str().unwrap_or("{}").to_owned();
+            if let Some(file_path) = path {
+                if let Err(e) = tokio::fs::write(file_path, &text).await {
+                    return Response::error(format!("write trace: {e}"));
+                }
+                Response::ok_data(ResponseData::Text {
+                    text: format!("trace saved to {file_path}"),
+                })
+            } else {
+                let parsed: serde_json::Value =
+                    serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+                Response::ok_data(ResponseData::Eval { value: parsed })
+            }
+        }
+        Err(e) => Response::error(format!("trace stop: {e}")),
+    }
+}
+
+/// Start CDP Profiler via JS Performance API.
+pub(super) async fn cmd_profiler_start(
+    state: &Arc<Mutex<DaemonState>>,
+    _categories: &[String],
+) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let js = r"(() => {
+        window.__brother_profiler_start = performance.now();
+        performance.mark('brother-profiler-start');
+        return 'profiler started';
+    })()";
+
+    match page.eval(js).await {
+        Ok(v) => Response::ok_data(ResponseData::Text {
+            text: v.as_str().unwrap_or("profiler started").to_owned(),
+        }),
+        Err(e) => Response::error(format!("profiler start: {e}")),
+    }
+}
+
+/// Stop CDP Profiler and return profile data.
+pub(super) async fn cmd_profiler_stop(
+    state: &Arc<Mutex<DaemonState>>,
+    path: Option<&str>,
+) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let js = r"(() => {
+        performance.mark('brother-profiler-stop');
+        performance.measure('brother-profiler', 'brother-profiler-start', 'brother-profiler-stop');
+        const start = window.__brother_profiler_start || 0;
+        const duration = performance.now() - start;
+        const measures = performance.getEntriesByType('measure');
+        const marks = performance.getEntriesByType('mark');
+        return JSON.stringify({
+            duration_ms: duration,
+            measures: measures.map(m => ({ name: m.name, start: m.startTime, duration: m.duration })),
+            marks: marks.map(m => ({ name: m.name, start: m.startTime }))
+        });
+    })()";
+
+    match page.eval(js).await {
+        Ok(v) => {
+            let text = v.as_str().unwrap_or("{}").to_owned();
+            if let Some(file_path) = path {
+                if let Err(e) = tokio::fs::write(file_path, &text).await {
+                    return Response::error(format!("write profile: {e}"));
+                }
+                Response::ok_data(ResponseData::Text {
+                    text: format!("profile saved to {file_path}"),
+                })
+            } else {
+                let parsed: serde_json::Value =
+                    serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+                Response::ok_data(ResponseData::Eval { value: parsed })
+            }
+        }
+        Err(e) => Response::error(format!("profiler stop: {e}")),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Domain filter handler
+// ---------------------------------------------------------------------------
+
+/// Set allowed domain patterns for navigation security.
+pub(super) async fn cmd_set_allowed_domains(
+    state: &Arc<Mutex<DaemonState>>,
+    domains: Vec<String>,
+) -> Response {
+    let mut guard = state.lock().await;
+    let count = domains.len();
+    guard.allowed_domains = domains;
+    Response::ok_data(ResponseData::Text {
+        text: if count == 0 {
+            "domain filter cleared (all domains allowed)".to_owned()
+        } else {
+            format!("{count} domain pattern(s) set")
+        },
+    })
+}

@@ -42,6 +42,8 @@ struct DaemonState {
     /// Pending launch configuration (set by `Launch` request before browser starts).
     launch_config: Option<BrowserConfig>,
     last_activity: tokio::time::Instant,
+    /// Allowed domain patterns for navigation security filter.
+    allowed_domains: Vec<String>,
 }
 
 /// A network interception rule.
@@ -85,6 +87,7 @@ pub async fn run_session(session: &str, idle_timeout: Option<Duration>) -> broth
         download_path: None,
         launch_config: None,
         last_activity: tokio::time::Instant::now(),
+        allowed_domains: Vec::new(),
     }));
 
     // Idle watcher
