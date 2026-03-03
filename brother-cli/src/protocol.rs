@@ -697,6 +697,20 @@ pub enum Request {
         full_page: bool,
     },
 
+    /// Compare two URLs: navigate to each, take snapshot + optional screenshot, diff.
+    DiffUrl {
+        /// First URL.
+        url_a: String,
+        /// Second URL.
+        url_b: String,
+        /// Also compare screenshots pixel-by-pixel.
+        #[serde(default)]
+        screenshot: bool,
+        /// Per-channel pixel threshold (0–255) for screenshot diff.
+        #[serde(default = "default_diff_threshold")]
+        threshold: u8,
+    },
+
     // -- State persistence --------------------------------------------------
     /// Save current browser state (cookies + storage) to a named file.
     StateSave {

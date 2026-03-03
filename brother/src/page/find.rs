@@ -145,6 +145,66 @@ impl Page {
         self.eval(&js).await
     }
 
+    /// Find elements by `alt` attribute (images, areas, inputs).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the JS evaluation fails.
+    pub async fn find_by_alt_text(&self, alt: &str, exact: bool) -> Result<serde_json::Value> {
+        let escaped = alt.replace('\\', "\\\\").replace('\'', "\\'");
+        let condition = if exact {
+            format!("el.alt === '{escaped}'")
+        } else {
+            format!(
+                "el.alt.toLowerCase().includes('{}')",
+                escaped.to_lowercase()
+            )
+        };
+        let js = format!(
+            r"(() => {{
+                const results = [];
+                const els = document.querySelectorAll('[alt]');
+                for (const el of els) {{
+                    if ({condition}) {{
+                        results.push({{ tag: el.tagName.toLowerCase(), alt: el.alt, src: el.src || '' }});
+                    }}
+                }}
+                return results;
+            }})()",
+        );
+        self.eval(&js).await
+    }
+
+    /// Find elements by `title` attribute.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the JS evaluation fails.
+    pub async fn find_by_title(&self, title: &str, exact: bool) -> Result<serde_json::Value> {
+        let escaped = title.replace('\\', "\\\\").replace('\'', "\\'");
+        let condition = if exact {
+            format!("el.title === '{escaped}'")
+        } else {
+            format!(
+                "el.title.toLowerCase().includes('{}')",
+                escaped.to_lowercase()
+            )
+        };
+        let js = format!(
+            r"(() => {{
+                const results = [];
+                const els = document.querySelectorAll('[title]');
+                for (const el of els) {{
+                    if ({condition}) {{
+                        results.push({{ tag: el.tagName.toLowerCase(), title: el.title, text: el.textContent.trim().substring(0, 100) }});
+                    }}
+                }}
+                return results;
+            }})()",
+        );
+        self.eval(&js).await
+    }
+
     /// Find elements by `data-testid` attribute.
     ///
     /// # Errors

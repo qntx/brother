@@ -266,9 +266,11 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
                 "label" => page.find_by_label(&value).await,
                 "placeholder" => page.find_by_placeholder(&value).await,
                 "testid" => page.find_by_testid(&value).await,
+                "alttext" | "alt" => page.find_by_alt_text(&value, exact).await,
+                "title" => page.find_by_title(&value, exact).await,
                 _ => {
                     return Response::error(format!(
-                        "unknown locator type '{by}'. Use: role, text, label, placeholder, testid"
+                        "unknown locator type '{by}'. Use: role, text, label, placeholder, testid, alttext, title"
                     ))
                 }
             };
@@ -534,6 +536,13 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
             threshold,
             full_page,
         } => super::handlers::cmd_diff_screenshot(state, &baseline, threshold, full_page).await,
+
+        Request::DiffUrl {
+            url_a,
+            url_b,
+            screenshot,
+            threshold,
+        } => super::handlers::cmd_diff_url(state, &url_a, &url_b, screenshot, threshold).await,
 
         // -- State persistence ------------------------------------------------
         Request::StateSave { name } => super::handlers::cmd_state_save(state, &name).await,

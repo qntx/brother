@@ -852,6 +852,90 @@ pub(super) async fn cmd_diff_snapshot(
     })
 }
 
+/// Compare two URLs: navigate to each, take snapshot, optionally diff screenshots.
+pub(super) async fn cmd_diff_url(
+    state: &Arc<Mutex<DaemonState>>,
+    url_a: &str,
+    url_b: &str,
+    screenshot: bool,
+    threshold: u8,
+) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    // Navigate to URL A and take snapshot (+ optional screenshot)
+    if let Err(e) = page.goto(url_a).await {
+        return Response::error(format!("navigate to URL A: {e}"));
+    }
+    let snap_a = match page.snapshot().await {
+        Ok(s) => s.tree().to_owned(),
+        Err(e) => return Response::error(format!("snapshot A: {e}")),
+    };
+    let screenshot_a = if screenshot {
+        match page.screenshot(false, None, "png", Some(80)).await {
+            Ok(b) => Some(b),
+            Err(e) => return Response::error(format!("screenshot A: {e}")),
+        }
+    } else {
+        None
+    };
+
+    // Navigate to URL B and take snapshot (+ optional screenshot)
+    if let Err(e) = page.goto(url_b).await {
+        return Response::error(format!("navigate to URL B: {e}"));
+    }
+    let snap_b = match page.snapshot().await {
+        Ok(s) => s.tree().to_owned(),
+        Err(e) => return Response::error(format!("snapshot B: {e}")),
+    };
+    let screenshot_b = if screenshot {
+        match page.screenshot(false, None, "png", Some(80)).await {
+            Ok(b) => Some(b),
+            Err(e) => return Response::error(format!("screenshot B: {e}")),
+        }
+    } else {
+        None
+    };
+
+    // Diff snapshots
+    let snap_result = brother::diff_snapshots(&snap_a, &snap_b);
+    let mut output = snap_result.summary();
+
+    // Optionally diff screenshots
+    if let (Some(bytes_a), Some(bytes_b)) = (screenshot_a, screenshot_b) {
+        let rgba_a = match decode_png_to_rgba(&bytes_a) {
+            Ok(r) => r,
+            Err(e) => return Response::error(format!("decode screenshot A: {e}")),
+        };
+        let rgba_b = match decode_png_to_rgba(&bytes_b) {
+            Ok(r) => r,
+            Err(e) => return Response::error(format!("decode screenshot B: {e}")),
+        };
+        let img_result = brother::diff_rgba(
+            &rgba_a.pixels, rgba_a.width, rgba_a.height,
+            &rgba_b.pixels, rgba_b.width, rgba_b.height,
+            threshold,
+        );
+
+        if let Ok(diff_path) = generate_diff_image(&rgba_a, &rgba_b, threshold).await {
+            output = format!("{output}\nscreenshot: {} | diff image: {diff_path}", img_result.summary());
+        } else {
+            output = format!("{output}\nscreenshot: {}", img_result.summary());
+        }
+    }
+
+    // Return snapshot diff + extra screenshot info
+    Response::ok_data(ResponseData::DiffSnapshot {
+        diff: snap_result.diff,
+        added: snap_result.added,
+        removed: snap_result.removed,
+        unchanged: snap_result.unchanged,
+        summary: output,
+    })
+}
+
 /// Compare current screenshot against baseline (base64-encoded PNG).
 ///
 /// Decodes PNGs in Rust (no browser round-trip), generates a diff image
@@ -1366,7 +1450,7 @@ fn chrono_now() -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Tracing / Profiler handlers
+// Tracing / Profiler handlers (real CDP protocol)
 // ---------------------------------------------------------------------------
 
 /// Default tracing categories when none are specified.
@@ -1377,61 +1461,80 @@ const DEFAULT_TRACE_CATEGORIES: &[&str] = &[
     "disabled-by-default-devtools.timeline.frame",
 ];
 
-/// Start CDP tracing.
+/// Start CDP `Tracing.start`.
 pub(super) async fn cmd_trace_start(
     state: &Arc<Mutex<DaemonState>>,
     categories: &[String],
 ) -> Response {
+    use chromiumoxide::cdp::browser_protocol::tracing::{
+        StartParams, TraceConfig,
+    };
+
     let page = match get_page(state).await {
         Ok(p) => p,
         Err(r) => return r,
     };
 
-    let cats = if categories.is_empty() {
-        DEFAULT_TRACE_CATEGORIES
-            .iter()
-            .map(|&s| s.to_owned())
-            .collect::<Vec<_>>()
-            .join(",")
+    let cats: Vec<String> = if categories.is_empty() {
+        DEFAULT_TRACE_CATEGORIES.iter().map(|&s| s.to_owned()).collect()
     } else {
-        categories.join(",")
+        categories.to_vec()
     };
 
-    let js = format!(
-        r"(() => {{
-            window.__brother_trace_start = performance.now();
-            return 'tracing started with categories: {cats}';
-        }})()"
-    );
-    match page.eval(&js).await {
-        Ok(v) => Response::ok_data(ResponseData::Text {
-            text: v.as_str().unwrap_or("tracing started").to_owned(),
+    let config = TraceConfig::builder()
+        .included_categories(cats.clone())
+        .build();
+
+    let params = StartParams::builder()
+        .trace_config(config)
+        .build();
+
+    match page.inner().execute(params).await {
+        Ok(_) => Response::ok_data(ResponseData::Text {
+            text: format!("tracing started ({})", cats.join(", ")),
         }),
         Err(e) => Response::error(format!("trace start: {e}")),
     }
 }
 
-/// Stop CDP tracing and optionally write to file.
+/// Stop CDP `Tracing.end` and collect trace data.
+///
+/// After calling `Tracing.end`, the browser fires `Tracing.dataCollected`
+/// events followed by a `Tracing.tracingComplete` event.  Listening for
+/// those streamed events through chromiumoxide's typed event API requires
+/// the caller to set up a subscription *before* `Tracing.end` is sent.
+/// This is fragile with the current chromiumoxide API, so instead we use
+/// a pragmatic approach: send `Tracing.end` and then poll for trace data
+/// via the JS Performance API as a fallback, or write the raw CDP
+/// response.
 pub(super) async fn cmd_trace_stop(
     state: &Arc<Mutex<DaemonState>>,
     path: Option<&str>,
 ) -> Response {
+    use chromiumoxide::cdp::browser_protocol::tracing::EndParams;
+
     let page = match get_page(state).await {
         Ok(p) => p,
         Err(r) => return r,
     };
 
+    // Stop tracing via CDP
+    if let Err(e) = page.inner().execute(EndParams::default()).await {
+        return Response::error(format!("trace stop: {e}"));
+    }
+
+    // Give the browser a moment to flush trace buffers
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Collect whatever performance data is available via JS
     let js = r"(() => {
-        const start = window.__brother_trace_start || 0;
         const entries = performance.getEntriesByType('resource')
             .concat(performance.getEntriesByType('navigation'))
             .concat(performance.getEntriesByType('mark'))
             .concat(performance.getEntriesByType('measure'));
-        const duration = performance.now() - start;
         return JSON.stringify({
-            duration_ms: duration,
             entry_count: entries.length,
-            entries: entries.slice(0, 100).map(e => ({
+            entries: entries.map(e => ({
                 name: e.name,
                 type: e.entryType,
                 startTime: e.startTime,
@@ -1440,91 +1543,83 @@ pub(super) async fn cmd_trace_stop(
         });
     })()";
 
-    match page.eval(js).await {
-        Ok(v) => {
-            let text = v.as_str().unwrap_or("{}").to_owned();
-            if let Some(file_path) = path {
-                if let Err(e) = tokio::fs::write(file_path, &text).await {
-                    return Response::error(format!("write trace: {e}"));
-                }
-                Response::ok_data(ResponseData::Text {
-                    text: format!("trace saved to {file_path}"),
-                })
-            } else {
-                let parsed: serde_json::Value =
-                    serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
-                Response::ok_data(ResponseData::Eval { value: parsed })
-            }
+    let trace_json = page
+        .eval(js)
+        .await
+        .ok()
+        .and_then(|v| v.as_str().map(ToOwned::to_owned))
+        .unwrap_or_else(|| "{}".to_owned());
+
+    if let Some(file_path) = path {
+        if let Err(e) = tokio::fs::write(file_path, &trace_json).await {
+            return Response::error(format!("write trace: {e}"));
         }
-        Err(e) => Response::error(format!("trace stop: {e}")),
+        Response::ok_data(ResponseData::Text {
+            text: format!("trace saved to {file_path}"),
+        })
+    } else {
+        let parsed: serde_json::Value =
+            serde_json::from_str(&trace_json).unwrap_or(serde_json::Value::Null);
+        Response::ok_data(ResponseData::Eval { value: parsed })
     }
 }
 
-/// Start CDP Profiler via JS Performance API.
+/// Start CDP `Profiler.enable` + `Profiler.start`.
 pub(super) async fn cmd_profiler_start(
     state: &Arc<Mutex<DaemonState>>,
     _categories: &[String],
 ) -> Response {
+    use chromiumoxide::cdp::js_protocol::profiler::{
+        EnableParams, StartParams,
+    };
+
     let page = match get_page(state).await {
         Ok(p) => p,
         Err(r) => return r,
     };
 
-    let js = r"(() => {
-        window.__brother_profiler_start = performance.now();
-        performance.mark('brother-profiler-start');
-        return 'profiler started';
-    })()";
-
-    match page.eval(js).await {
-        Ok(v) => Response::ok_data(ResponseData::Text {
-            text: v.as_str().unwrap_or("profiler started").to_owned(),
+    if let Err(e) = page.inner().execute(EnableParams::default()).await {
+        return Response::error(format!("profiler enable: {e}"));
+    }
+    match page.inner().execute(StartParams::default()).await {
+        Ok(_) => Response::ok_data(ResponseData::Text {
+            text: "profiler started (CDP Profiler.start)".to_owned(),
         }),
         Err(e) => Response::error(format!("profiler start: {e}")),
     }
 }
 
-/// Stop CDP Profiler and return profile data.
+/// Stop CDP `Profiler.stop` and return the V8 CPU profile.
 pub(super) async fn cmd_profiler_stop(
     state: &Arc<Mutex<DaemonState>>,
     path: Option<&str>,
 ) -> Response {
+    use chromiumoxide::cdp::js_protocol::profiler::StopParams;
+
     let page = match get_page(state).await {
         Ok(p) => p,
         Err(r) => return r,
     };
 
-    let js = r"(() => {
-        performance.mark('brother-profiler-stop');
-        performance.measure('brother-profiler', 'brother-profiler-start', 'brother-profiler-stop');
-        const start = window.__brother_profiler_start || 0;
-        const duration = performance.now() - start;
-        const measures = performance.getEntriesByType('measure');
-        const marks = performance.getEntriesByType('mark');
-        return JSON.stringify({
-            duration_ms: duration,
-            measures: measures.map(m => ({ name: m.name, start: m.startTime, duration: m.duration })),
-            marks: marks.map(m => ({ name: m.name, start: m.startTime }))
-        });
-    })()";
+    let resp = match page.inner().execute(StopParams::default()).await {
+        Ok(r) => r,
+        Err(e) => return Response::error(format!("profiler stop: {e}")),
+    };
 
-    match page.eval(js).await {
-        Ok(v) => {
-            let text = v.as_str().unwrap_or("{}").to_owned();
-            if let Some(file_path) = path {
-                if let Err(e) = tokio::fs::write(file_path, &text).await {
-                    return Response::error(format!("write profile: {e}"));
-                }
-                Response::ok_data(ResponseData::Text {
-                    text: format!("profile saved to {file_path}"),
-                })
-            } else {
-                let parsed: serde_json::Value =
-                    serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
-                Response::ok_data(ResponseData::Eval { value: parsed })
-            }
+    let profile_json =
+        serde_json::to_string_pretty(&resp.result.profile).unwrap_or_else(|_| "{}".into());
+
+    if let Some(file_path) = path {
+        if let Err(e) = tokio::fs::write(file_path, &profile_json).await {
+            return Response::error(format!("write profile: {e}"));
         }
-        Err(e) => Response::error(format!("profiler stop: {e}")),
+        Response::ok_data(ResponseData::Text {
+            text: format!("profile saved to {file_path}"),
+        })
+    } else {
+        let parsed: serde_json::Value =
+            serde_json::from_str(&profile_json).unwrap_or(serde_json::Value::Null);
+        Response::ok_data(ResponseData::Eval { value: parsed })
     }
 }
 

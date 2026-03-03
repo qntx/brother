@@ -393,6 +393,17 @@ pub fn build_request(cmd: &Command) -> Request {
                     full_page: *full_page,
                 }
             }
+            crate::commands::DiffSub::Url {
+                url_a,
+                url_b,
+                screenshot,
+                threshold,
+            } => Request::DiffUrl {
+                url_a: url_a.clone(),
+                url_b: url_b.clone(),
+                screenshot: *screenshot,
+                threshold: *threshold,
+            },
         },
         Command::State(sub) => match sub {
             crate::commands::StateSub::Save { name } => Request::StateSave { name: name.clone() },

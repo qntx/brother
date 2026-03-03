@@ -259,16 +259,16 @@ pub enum Command {
         /// Ref or CSS selector.
         target: String,
     },
-    /// Find elements by semantic locator (role, text, label, placeholder, testid).
+    /// Find elements by semantic locator.
     Find {
-        /// Locator type: `role`, `text`, `label`, `placeholder`, `testid`.
+        /// Locator type: `role`, `text`, `label`, `placeholder`, `testid`, `alttext`, `title`.
         by: String,
         /// Value to search for.
         value: String,
         /// Name filter (only for `role` locator).
         #[arg(short, long)]
         name: Option<String>,
-        /// Exact text match (only for `text` locator).
+        /// Exact match (for `text`, `alttext`, `title` locators).
         #[arg(long)]
         exact: bool,
     },
@@ -658,6 +658,19 @@ pub enum DiffSub {
         /// Full-page screenshot.
         #[arg(short, long)]
         full_page: bool,
+    },
+    /// Compare two URLs (snapshot + optional screenshot).
+    Url {
+        /// First URL.
+        url_a: String,
+        /// Second URL.
+        url_b: String,
+        /// Also compare screenshots.
+        #[arg(short, long)]
+        screenshot: bool,
+        /// Per-channel pixel threshold (0–255).
+        #[arg(short, long, default_value = "10")]
+        threshold: u8,
     },
 }
 

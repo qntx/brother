@@ -250,6 +250,10 @@ impl Page {
         &self.inner
     }
 
+    // NOTE: For arbitrary CDP commands (tracing, profiler, etc.), use
+    // `page.inner().execute(params)` directly. The `inner()` accessor
+    // provides full access to chromiumoxide's typed CDP API.
+
     // -----------------------------------------------------------------------
     // Internal: target resolution
     // -----------------------------------------------------------------------
