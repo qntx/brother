@@ -290,59 +290,45 @@ impl Page {
     }
 
     /// Resolve any target to its center point for click/hover.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the element is not found.
     pub async fn resolve_target_center(&self, target: &str) -> Result<Point> {
         let oid = self.resolve_target_object(target).await?;
         self.get_center_from_object(oid).await
     }
 
-    /// Call a JS function on a target element and discard the result.
-    async fn call_on_target(&self, target: &str, function: &str) -> Result<()> {
-        let oid = self.resolve_target_object(target).await?;
+    /// Execute a JS function on a `RemoteObjectId` and return the raw result.
+    async fn call_fn_on(
+        &self,
+        oid: chromiumoxide::cdp::js_protocol::runtime::RemoteObjectId,
+        function: &str,
+    ) -> Result<Option<serde_json::Value>> {
         let params = CallFunctionOnParams::builder()
             .object_id(oid)
             .function_declaration(function)
             .build()
             .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?;
-        self.inner.execute(params).await.map_err(Error::Cdp)?;
+        let resp = self.inner.execute(params).await.map_err(Error::Cdp)?;
+        Ok(resp.result.result.value)
+    }
+
+    /// Call a JS function on a target element and discard the result.
+    async fn call_on_target(&self, target: &str, function: &str) -> Result<()> {
+        let oid = self.resolve_target_object(target).await?;
+        self.call_fn_on(oid, function).await?;
         Ok(())
     }
 
     /// Call a JS function on a target and return a boolean result.
     async fn call_bool_on_target(&self, target: &str, function: &str) -> Result<bool> {
         let oid = self.resolve_target_object(target).await?;
-        let params = CallFunctionOnParams::builder()
-            .object_id(oid)
-            .function_declaration(function)
-            .build()
-            .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?;
-        let resp = self.inner.execute(params).await.map_err(Error::Cdp)?;
-        Ok(resp
-            .result
-            .result
-            .value
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false))
+        let val = self.call_fn_on(oid, function).await?;
+        Ok(val.and_then(|v| v.as_bool()).unwrap_or(false))
     }
 
     /// Call a JS function on a target and return the string result.
     async fn call_text_on_target(&self, target: &str, function: &str) -> Result<String> {
         let oid = self.resolve_target_object(target).await?;
-        let params = CallFunctionOnParams::builder()
-            .object_id(oid)
-            .function_declaration(function)
-            .build()
-            .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?;
-        let resp = self.inner.execute(params).await.map_err(Error::Cdp)?;
-        Ok(resp
-            .result
-            .result
-            .value
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_default())
+        let val = self.call_fn_on(oid, function).await?;
+        Ok(val.and_then(|v| v.as_str().map(String::from)).unwrap_or_default())
     }
 
     /// Resolve a ref to a `RemoteObjectId` (fast path + JS fallback).
