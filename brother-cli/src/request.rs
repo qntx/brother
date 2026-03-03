@@ -12,9 +12,10 @@ use crate::protocol::{Request, RouteAction, WaitCondition, WaitStrategy};
 pub fn build_request(cmd: Command) -> Request {
     match cmd {
         Command::Connect { target } => Request::Connect { target },
-        Command::Open { url } => Request::Navigate {
+        Command::Open { url, headers } => Request::Navigate {
             url: normalize_url(&url),
             wait: WaitStrategy::Load,
+            headers: parse_header_list(&headers),
         },
         Command::Snapshot {
             interactive,
@@ -85,18 +86,23 @@ pub fn build_request(cmd: Command) -> Request {
         Command::ScrollIntoView { target } => Request::ScrollIntoView { target },
         Command::BoundingBox { target } => Request::BoundingBox { target },
         Command::SetContent { html } => Request::SetContent { html },
-        Command::Pdf { path } => Request::Pdf { path },
+        Command::Pdf { path, format } => Request::Pdf {
+            path,
+            paper_format: format,
+        },
         Command::Screenshot {
             full_page,
             selector,
             format,
             quality,
+            annotate,
             ..
         } => Request::Screenshot {
             full_page,
             selector,
             format,
             quality,
+            annotate,
         },
         Command::Eval { expression } => Request::Eval { expression },
         Command::Get { what, target, attr } => build_get_request(&what, target, attr),
@@ -376,6 +382,12 @@ pub fn build_request(cmd: Command) -> Request {
             HarSub::Stop { output } => Request::HarStop { path: output },
         },
         Command::AllowedDomains { domains } => Request::SetAllowedDomains { domains },
+        Command::Confirm { id } => Request::Confirm {
+            confirmation_id: id,
+        },
+        Command::DenyAction { id } => Request::Deny {
+            confirmation_id: id,
+        },
         Command::Status | Command::Daemon => Request::Status,
         Command::Close => Request::Close,
     }
@@ -481,6 +493,16 @@ fn build_wait_request(
         _ => WaitCondition::Duration { ms: timeout },
     };
     Request::Wait { condition }
+}
+
+fn parse_header_list(headers: &[String]) -> std::collections::HashMap<String, String> {
+    headers
+        .iter()
+        .filter_map(|h| {
+            let (key, value) = h.split_once(':')?;
+            Some((key.trim().to_owned(), value.trim().to_owned()))
+        })
+        .collect()
 }
 
 fn normalize_url(url: &str) -> String {

@@ -22,6 +22,9 @@ pub enum Command {
     Open {
         /// Target URL.
         url: String,
+        /// Extra HTTP header in `key:value` format (repeatable).
+        #[arg(short = 'H', long = "header")]
+        headers: Vec<String>,
     },
     /// Go back in history.
     Back,
@@ -72,6 +75,9 @@ pub enum Command {
         /// JPEG quality (1-100).
         #[arg(short, long, default_value = "80")]
         quality: u8,
+        /// Annotate interactive elements with ref numbers on the screenshot.
+        #[arg(short, long)]
+        annotate: bool,
     },
     /// Evaluate a `JavaScript` expression.
     Eval {
@@ -459,6 +465,9 @@ pub enum Command {
         /// Output file path.
         #[arg(default_value = "page.pdf")]
         path: String,
+        /// Paper format: `letter`, `legal`, `tabloid`, `a0`–`a6`.
+        #[arg(short, long)]
+        format: Option<String>,
     },
 
     /// Dialog handling: message, accept, dismiss.
@@ -594,6 +603,19 @@ pub enum Command {
         #[command(subcommand)]
         sub: DiffSub,
     },
+    /// Approve a pending action (from policy confirmation).
+    #[command(name = "confirm")]
+    Confirm {
+        /// Confirmation ID.
+        id: String,
+    },
+    /// Reject a pending action (from policy confirmation).
+    #[command(name = "deny")]
+    DenyAction {
+        /// Confirmation ID.
+        id: String,
+    },
+
     /// Save/load browser state (cookies + storage).
     #[command(subcommand)]
     State(StateSub),

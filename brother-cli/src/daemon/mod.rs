@@ -49,8 +49,12 @@ struct DaemonState {
     allowed_domains: Vec<String>,
     /// Pending color scheme to apply after browser launch.
     pending_color_scheme: Option<String>,
+    /// Pending storage state file to load after browser launch.
+    pending_storage_state: Option<String>,
     /// Action policy cache (hot-reloaded from file).
     policy_cache: Option<policy::PolicyCache>,
+    /// Pending confirmation queue for policy confirm decisions.
+    confirmations: policy::ConfirmationQueue,
     /// HAR recording: captured entries while recording is active.
     har_entries: Option<Vec<serde_json::Value>>,
 }
@@ -92,6 +96,7 @@ pub async fn run_session(
         last_activity: tokio::time::Instant::now(),
         allowed_domains: Vec::new(),
         pending_color_scheme: None,
+        pending_storage_state: None,
         policy_cache: policy_file.and_then(|path| match policy::load_policy_file(path) {
             Ok(p) => {
                 tracing::info!(path, "loaded action policy");
@@ -102,6 +107,7 @@ pub async fn run_session(
                 None
             }
         }),
+        confirmations: policy::ConfirmationQueue::new(),
         har_entries: None,
     }));
 

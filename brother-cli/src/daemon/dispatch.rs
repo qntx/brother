@@ -10,9 +10,24 @@ use super::{DaemonState, get_page, handlers, page_display, page_eval, page_ok, p
 
 #[allow(clippy::cognitive_complexity, clippy::large_stack_frames)]
 pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> Response {
+    // Confirm/Deny bypass policy check
+    match &req {
+        Request::Confirm { confirmation_id } => {
+            return cmd_confirm(state, confirmation_id).await;
+        }
+        Request::Deny { confirmation_id } => {
+            return cmd_deny(state, confirmation_id).await;
+        }
+        _ => {}
+    }
     if let Some(resp) = check_policy(state, &req).await {
         return resp;
     }
+    dispatch_no_policy(req, state).await
+}
+
+#[allow(clippy::cognitive_complexity, clippy::large_stack_frames)]
+async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Response {
     match req {
         Request::Launch {
             headed,
@@ -28,6 +43,8 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
             extensions,
             color_scheme,
             allowed_domains,
+            allow_file_access,
+            storage_state,
         } => {
             dispatch_launch(
                 state,
@@ -44,11 +61,13 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
                 extensions,
                 color_scheme,
                 allowed_domains,
+                allow_file_access,
+                storage_state,
             )
             .await
         }
         Request::Connect { target } => handlers::cmd_connect(state, &target).await,
-        Request::Navigate { url, wait } => handlers::cmd_navigate(state, &url, wait).await,
+        Request::Navigate { url, wait, headers } => handlers::cmd_navigate(state, &url, wait, headers).await,
         Request::Back => page_ok!(state, go_back()),
         Request::Forward => page_ok!(state, go_forward()),
         Request::Reload => page_ok!(state, reload()),
@@ -58,8 +77,9 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
             selector,
             format,
             quality,
+            annotate,
         } => {
-            handlers::cmd_screenshot(state, full_page, selector.as_deref(), &format, quality).await
+            handlers::cmd_screenshot(state, full_page, selector.as_deref(), &format, quality, annotate).await
         }
         Request::Eval { expression } => page_eval!(state, eval(&expression)),
         Request::Click {
@@ -108,7 +128,13 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
         }
         Request::BoundingBox { target } => handlers::cmd_bounding_box(state, &target).await,
         Request::SetContent { html } => page_ok!(state, set_content(&html)),
-        Request::Pdf { path } => page_ok!(state, pdf(&path)),
+        Request::Pdf { path, paper_format } => {
+            let (pw, ph) = paper_format
+                .as_deref()
+                .map(paper_dimensions)
+                .unwrap_or((None, None));
+            page_ok!(state, pdf_with(&path, pw, ph))
+        }
         Request::Route {
             pattern,
             action,
@@ -325,6 +351,9 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
         Request::SetAllowedDomains { domains } => {
             handlers::cmd_set_allowed_domains(state, domains).await
         }
+        Request::Confirm { .. } | Request::Deny { .. } => {
+            Response::error("confirm/deny handled at dispatch level")
+        }
         Request::Status => handlers::cmd_status(state).await,
         Request::Close => Response::ok(),
     }
@@ -335,13 +364,71 @@ async fn check_policy(state: &Arc<Mutex<DaemonState>>, req: &Request) -> Option<
     let cache = guard.policy_cache.as_mut()?;
     let cmd_name = request_cmd_name(req);
     let policy = cache.get();
-    if super::policy::check_policy(&cmd_name, policy) == super::policy::PolicyDecision::Deny {
-        let category = super::policy::get_category(&cmd_name).unwrap_or("unknown");
-        return Some(Response::error(format!(
-            "action denied by policy: command '{cmd_name}' (category '{category}') is not allowed"
-        )));
+    match super::policy::check_policy(&cmd_name, policy) {
+        super::policy::PolicyDecision::Allow => None,
+        super::policy::PolicyDecision::Deny => {
+            let category = super::policy::get_category(&cmd_name).unwrap_or("unknown");
+            Some(Response::error(format!(
+                "action denied by policy: command '{cmd_name}' (category '{category}') is not allowed"
+            )))
+        }
+        super::policy::PolicyDecision::Confirm => {
+            let category = super::policy::get_category(&cmd_name).unwrap_or("unknown").to_owned();
+            let req_json = serde_json::to_value(req).unwrap_or_default();
+            let description = super::policy::describe_action(&cmd_name, &req_json);
+            let request_json = serde_json::to_string(req).unwrap_or_default();
+            let confirmation_id = guard.confirmations.request(
+                cmd_name.clone(),
+                category.clone(),
+                description.clone(),
+                request_json,
+            );
+            Some(Response::ok_data(ResponseData::ConfirmationRequired {
+                confirmation_id,
+                action: cmd_name,
+                category,
+                description,
+            }))
+        }
     }
-    None
+}
+
+async fn cmd_confirm(state: &Arc<Mutex<DaemonState>>, confirmation_id: &str) -> Response {
+    let entry = {
+        let mut guard = state.lock().await;
+        guard.confirmations.take(confirmation_id)
+    };
+    let Some(entry) = entry else {
+        return Response::error(format!(
+            "no pending confirmation with id '{confirmation_id}' (expired or already handled)"
+        ));
+    };
+    let Ok(original_req) = serde_json::from_str::<Request>(&entry.request_json) else {
+        return Response::error("stored command is no longer valid");
+    };
+    // Re-check deny list in case policy was updated
+    {
+        let mut guard = state.lock().await;
+        if let Some(cache) = guard.policy_cache.as_mut() {
+            let policy = cache.get();
+            if super::policy::check_policy(&entry.cmd_name, policy)
+                == super::policy::PolicyDecision::Deny
+            {
+                let cat = super::policy::get_category(&entry.cmd_name).unwrap_or("unknown");
+                return Response::error(format!(
+                    "action denied by policy: '{cat}' is no longer allowed"
+                ));
+            }
+        }
+    }
+    // Bypass policy check and dispatch directly
+    dispatch_no_policy(original_req, state).await
+}
+
+async fn cmd_deny(_state: &Arc<Mutex<DaemonState>>, confirmation_id: &str) -> Response {
+    let mut guard = _state.lock().await;
+    let _ = guard.confirmations.take(confirmation_id);
+    Response::ok()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -360,6 +447,8 @@ async fn dispatch_launch(
     extensions: Vec<String>,
     color_scheme: Option<String>,
     allowed_domains: Vec<String>,
+    allow_file_access: bool,
+    storage_state: Option<String>,
 ) -> Response {
     let mut guard = state.lock().await;
     if guard.browser.is_some() {
@@ -387,13 +476,33 @@ async fn dispatch_launch(
     for ext in &extensions {
         config.args.push(format!("--load-extension={ext}"));
     }
+    if allow_file_access {
+        config.args.push("--allow-file-access-from-files".into());
+    }
     config.args.extend(extra_args);
     guard.pending_color_scheme = color_scheme;
+    guard.pending_storage_state = storage_state;
     if !allowed_domains.is_empty() {
         guard.allowed_domains = allowed_domains;
     }
     guard.launch_config = Some(config);
     Response::ok()
+}
+
+fn paper_dimensions(format: &str) -> (Option<f64>, Option<f64>) {
+    match format.to_ascii_lowercase().as_str() {
+        "letter" => (Some(8.5), Some(11.0)),
+        "legal" => (Some(8.5), Some(14.0)),
+        "tabloid" => (Some(11.0), Some(17.0)),
+        "a0" => (Some(33.1), Some(46.8)),
+        "a1" => (Some(23.4), Some(33.1)),
+        "a2" => (Some(16.54), Some(23.39)),
+        "a3" => (Some(11.69), Some(16.54)),
+        "a4" => (Some(8.27), Some(11.69)),
+        "a5" => (Some(5.83), Some(8.27)),
+        "a6" => (Some(4.13), Some(5.83)),
+        _ => (None, None),
+    }
 }
 
 fn request_cmd_name(req: &Request) -> String {

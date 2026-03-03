@@ -186,5 +186,7 @@ fn build_launch(cli: &Cli, cfg: &config::Config) -> Option<protocol::Request> {
         extensions: Vec::new(),
         color_scheme: None,
         allowed_domains: Vec::new(),
+        allow_file_access: false,
+        storage_state: None,
     })
 }

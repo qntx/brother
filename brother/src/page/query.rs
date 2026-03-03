@@ -348,12 +348,27 @@ impl Page {
 
     /// Export the page as PDF and write to the given path (headless only).
     pub async fn pdf(&self, path: &str) -> Result<()> {
+        self.pdf_with(path, None, None).await
+    }
+
+    /// Export the page as PDF with optional paper dimensions (in inches).
+    ///
+    /// Default is US Letter (8.5 × 11 inches).
+    pub async fn pdf_with(
+        &self,
+        path: &str,
+        paper_width: Option<f64>,
+        paper_height: Option<f64>,
+    ) -> Result<()> {
         use chromiumoxide::cdp::browser_protocol::page::PrintToPdfParams;
-        let resp = self
-            .inner
-            .execute(PrintToPdfParams::default())
-            .await
-            .map_err(Error::Cdp)?;
+        let mut params = PrintToPdfParams::default();
+        if let Some(w) = paper_width {
+            params.paper_width = Some(w);
+        }
+        if let Some(h) = paper_height {
+            params.paper_height = Some(h);
+        }
+        let resp = self.inner.execute(params).await.map_err(Error::Cdp)?;
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(&resp.result.data)
             .map_err(|e| Error::Browser(format!("base64 decode: {e}")))?;

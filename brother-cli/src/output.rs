@@ -173,6 +173,53 @@ fn print_plain(data: Option<&ResponseData>, screenshot: Option<&ScreenshotOutput
                 }
             }
         }
+        Some(ResponseData::AnnotatedScreenshot { data, annotations }) => {
+            if let Some(ss) = screenshot {
+                let path = ss.path.clone().unwrap_or_else(|| {
+                    let ext = if ss.format == "jpeg" { "jpg" } else { "png" };
+                    let ts = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_millis());
+                    format!("screenshot-{ts}.{ext}")
+                });
+                match base64::engine::general_purpose::STANDARD.decode(data) {
+                    Ok(bytes) => {
+                        if let Err(e) = std::fs::write(&path, &bytes) {
+                            eprintln!("error writing screenshot: {e}");
+                        } else {
+                            println!("saved: {path} ({} bytes)", bytes.len());
+                        }
+                    }
+                    Err(e) => eprintln!("error decoding screenshot: {e}"),
+                }
+            }
+            if let Some(arr) = annotations.as_array() {
+                println!("annotations: {} elements", arr.len());
+                for a in arr {
+                    let num = a.get("number").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let role = a.get("role").and_then(|v| v.as_str()).unwrap_or("");
+                    let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    print!("  @e{num} [{role}]");
+                    if !name.is_empty() {
+                        print!(" \"{name}\"");
+                    }
+                    println!();
+                }
+            }
+        }
+        Some(ResponseData::ConfirmationRequired {
+            confirmation_id,
+            action,
+            category,
+            description,
+        }) => {
+            println!("confirmation required [{category}]");
+            println!("  action: {action}");
+            println!("  description: {description}");
+            println!("  id: {confirmation_id}");
+            println!("  approve: brother confirm {confirmation_id}");
+            println!("  reject:  brother deny {confirmation_id}");
+        }
         None => println!("ok"),
     }
 }

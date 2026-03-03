@@ -34,6 +34,7 @@ pub(super) async fn cmd_navigate(
     state: &Arc<Mutex<DaemonState>>,
     url: &str,
     wait: WaitStrategy,
+    headers: std::collections::HashMap<String, String>,
 ) -> Response {
     // Domain filter: block navigation to non-allowed domains.
     {
@@ -51,11 +52,27 @@ pub(super) async fn cmd_navigate(
         Ok(p) => p,
         Err(r) => return r,
     };
+    let has_headers = !headers.is_empty();
+    if has_headers {
+        let map: serde_json::Map<String, serde_json::Value> = headers
+            .iter()
+            .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+            .collect();
+        if let Err(e) = page.set_extra_headers(map).await {
+            return Response::error(format!("failed to set headers: {e}"));
+        }
+    }
     if let Err(e) = page.goto(url).await {
+        if has_headers {
+            let _ = page.set_extra_headers(serde_json::Map::new()).await;
+        }
         return Response::error(format!("navigation failed: {e}"));
     }
     if matches!(wait, WaitStrategy::NetworkIdle) {
         let _ = page.wait_for_navigation().await;
+    }
+    if has_headers {
+        let _ = page.set_extra_headers(serde_json::Map::new()).await;
     }
     let u = page.url().await.unwrap_or_default();
     let t = page.title().await.unwrap_or_default();
@@ -934,18 +951,123 @@ pub(super) async fn cmd_screenshot(
     selector: Option<&str>,
     format: &str,
     quality: u8,
+    annotate: bool,
 ) -> Response {
     let page = match get_page(state).await {
         Ok(p) => p,
         Err(r) => return r,
     };
-    match page
-        .screenshot(full_page, selector, format, Some(quality))
+
+    if !annotate {
+        return match page
+            .screenshot(full_page, selector, format, Some(quality))
+            .await
+        {
+            Ok(bytes) => {
+                let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                Response::ok_data(ResponseData::Screenshot { data })
+            }
+            Err(e) => Response::error(format!("screenshot failed: {e}")),
+        };
+    }
+
+    let snap = match page
+        .snapshot_with(brother::SnapshotOptions::default().interactive_only(true))
         .await
     {
+        Ok(s) => s,
+        Err(e) => return Response::error(format!("snapshot for annotations failed: {e}")),
+    };
+
+    let refs = snap.refs();
+    let mut annotations = Vec::new();
+    for (ref_id, info) in refs {
+        let num: u32 = ref_id
+            .strip_prefix('e')
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        if let Ok((x, y, w, h)) = page.bounding_box(&format!("@{ref_id}")).await {
+            if w > 0.0 && h > 0.0 {
+                annotations.push(serde_json::json!({
+                    "ref": ref_id,
+                    "number": num,
+                    "role": info.role,
+                    "name": info.name,
+                    "box": {
+                        "x": x.round(),
+                        "y": y.round(),
+                        "width": w.round(),
+                        "height": h.round(),
+                    }
+                }));
+            }
+        }
+    }
+
+    annotations.sort_by_key(|a| a["number"].as_u64().unwrap_or(0));
+
+    if !annotations.is_empty() {
+        let overlay_data: Vec<serde_json::Value> = annotations
+            .iter()
+            .map(|a| {
+                serde_json::json!({
+                    "number": a["number"],
+                    "x": a["box"]["x"],
+                    "y": a["box"]["y"],
+                    "width": a["box"]["width"],
+                    "height": a["box"]["height"],
+                })
+            })
+            .collect();
+
+        let inject_js = format!(
+            r#"(() => {{
+var items = {items};
+var id = '__brother_annotations__';
+var sx = window.scrollX || 0;
+var sy = window.scrollY || 0;
+var c = document.createElement('div');
+c.id = id;
+c.style.cssText = 'position:absolute;top:0;left:0;width:0;height:0;pointer-events:none;z-index:2147483647;';
+for (var i = 0; i < items.length; i++) {{
+  var it = items[i];
+  var dx = it.x + sx;
+  var dy = it.y + sy;
+  var b = document.createElement('div');
+  b.style.cssText = 'position:absolute;left:'+dx+'px;top:'+dy+'px;width:'+it.width+'px;height:'+it.height+'px;border:2px solid rgba(255,0,0,0.8);box-sizing:border-box;pointer-events:none;';
+  var l = document.createElement('div');
+  l.textContent = String(it.number);
+  var labelTop = dy < 14 ? '2px' : '-14px';
+  l.style.cssText = 'position:absolute;top:'+labelTop+';left:-2px;background:rgba(255,0,0,0.9);color:#fff;font:bold 11px/14px monospace;padding:0 4px;border-radius:2px;white-space:nowrap;';
+  b.appendChild(l);
+  c.appendChild(b);
+}}
+document.documentElement.appendChild(c);
+}})()"#,
+            items = serde_json::to_string(&overlay_data).unwrap_or_default()
+        );
+
+        let _ = page.eval(&inject_js).await;
+    }
+
+    let screenshot_result = page
+        .screenshot(full_page, selector, format, Some(quality))
+        .await;
+
+    if !annotations.is_empty() {
+        let _ = page
+            .eval("(() => { const el = document.getElementById('__brother_annotations__'); if (el) el.remove(); })()")
+            .await;
+    }
+
+    match screenshot_result {
         Ok(bytes) => {
             let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
-            Response::ok_data(ResponseData::Screenshot { data })
+            let annot_value = serde_json::Value::Array(annotations);
+            Response::ok_data(ResponseData::AnnotatedScreenshot {
+                data,
+                annotations: annot_value,
+            })
         }
         Err(e) => Response::error(format!("screenshot failed: {e}")),
     }

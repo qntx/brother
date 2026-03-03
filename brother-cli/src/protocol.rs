@@ -53,6 +53,12 @@ pub enum Request {
         /// Allowed domains — navigation to other domains will be blocked at launch.
         #[serde(default)]
         allowed_domains: Vec<String>,
+        /// Allow `file://` URL access.
+        #[serde(default)]
+        allow_file_access: bool,
+        /// Path to a storage state JSON file (cookies + localStorage) to load at launch.
+        #[serde(default)]
+        storage_state: Option<String>,
     },
 
     /// Connect to an existing browser via CDP websocket URL or debugging port.
@@ -68,6 +74,9 @@ pub enum Request {
         /// Wait strategy after navigation.
         #[serde(default)]
         wait: WaitStrategy,
+        /// Optional per-request HTTP headers (scoped to this navigation's origin).
+        #[serde(default)]
+        headers: std::collections::HashMap<String, String>,
     },
     /// Go back in history.
     Back,
@@ -96,6 +105,9 @@ pub enum Request {
         /// JPEG quality (1-100, only for jpeg format).
         #[serde(default = "default_jpeg_quality")]
         quality: u8,
+        /// Annotate interactive elements with ref numbers on the screenshot.
+        #[serde(default)]
+        annotate: bool,
     },
     /// Evaluate `JavaScript` and return the result.
     Eval {
@@ -253,6 +265,9 @@ pub enum Request {
     Pdf {
         /// Output file path.
         path: String,
+        /// Paper format: `letter`, `legal`, `a0`–`a6`, `tabloid` (default: letter).
+        #[serde(default)]
+        paper_format: Option<String>,
     },
 
     /// Intercept requests matching a URL pattern and respond with custom data or block.
@@ -827,6 +842,17 @@ pub enum Request {
         domains: Vec<String>,
     },
 
+    /// Confirm a previously pending action (approve execution).
+    Confirm {
+        /// Confirmation ID returned by a prior `confirmation_required` response.
+        confirmation_id: String,
+    },
+    /// Deny a previously pending action (reject execution).
+    Deny {
+        /// Confirmation ID returned by a prior `confirmation_required` response.
+        confirmation_id: String,
+    },
+
     /// Check daemon health / browser status.
     Status,
     /// Close the browser and shut down the daemon.
@@ -1016,6 +1042,13 @@ pub enum ResponseData {
         /// Base64-encoded image data.
         data: String,
     },
+    /// Annotated screenshot with element ref overlays.
+    AnnotatedScreenshot {
+        /// Base64-encoded image data (with overlays baked in).
+        data: String,
+        /// Array of annotation objects with ref, number, role, name, box.
+        annotations: serde_json::Value,
+    },
     /// `JavaScript` evaluation result.
     Eval {
         /// Serialized result.
@@ -1088,6 +1121,17 @@ pub enum ResponseData {
     StateList {
         /// State names.
         states: Vec<String>,
+    },
+    /// Action requires human confirmation before execution.
+    ConfirmationRequired {
+        /// Unique confirmation ID (use with `Confirm` / `Deny`).
+        confirmation_id: String,
+        /// The action that needs confirmation.
+        action: String,
+        /// Action category (e.g. `eval`, `download`).
+        category: String,
+        /// Human-readable description.
+        description: String,
     },
 }
 

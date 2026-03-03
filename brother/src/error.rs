@@ -146,6 +146,31 @@ impl Error {
             return Self::PageClosed;
         }
 
+        // Multiple elements matched (ambiguous selector)
+        if lower.contains("strict mode violation") || lower.contains("resolved to") && lower.contains("elements") {
+            return Self::InvalidArgument(format!(
+                "Selector \"{target}\" matched multiple elements. \
+                 Use a more specific selector or run 'snapshot' to find the exact ref."
+            ));
+        }
+
+        // Detached element (removed from DOM between resolve and action)
+        if lower.contains("detached") || lower.contains("orphan") {
+            return Self::ElementNotFound(format!(
+                "Element \"{target}\" was removed from the DOM during the action. \
+                 Run 'snapshot' to get updated refs."
+            ));
+        }
+
+        // Execution context destroyed (navigation happened during eval)
+        if lower.contains("execution context") && lower.contains("destroy") {
+            return Self::Navigation(
+                "A navigation occurred while executing JavaScript. \
+                 Wait for navigation to complete before evaluating scripts."
+                    .to_owned(),
+            );
+        }
+
         // No pattern matched — return original
         self
     }
