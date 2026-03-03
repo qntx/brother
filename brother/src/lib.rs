@@ -1,3 +1,4 @@
+#![allow(clippy::missing_errors_doc)]
 //! # Brother
 //!
 //! Browser automation for AI agents, built on Chrome `DevTools` Protocol.
