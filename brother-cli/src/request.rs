@@ -156,13 +156,22 @@ pub fn build_request(cmd: &Command) -> Request {
             value,
             name,
             exact,
+            subaction,
+            fill_value,
         } => Request::Find {
             by: by.clone(),
             value: value.clone(),
             name: name.clone(),
             exact: *exact,
+            subaction: subaction.clone(),
+            fill_value: fill_value.clone(),
         },
         Command::Device { name } => Request::Device { name: name.clone() },
+        Command::DeviceList => Request::DeviceList,
+        Command::WindowNew { width, height } => Request::WindowNew {
+            width: *width,
+            height: *height,
+        },
         Command::Viewport { width, height } => Request::Viewport {
             width: *width,
             height: *height,
@@ -358,11 +367,13 @@ pub fn build_request(cmd: &Command) -> Request {
         Command::Nth {
             selector,
             index,
-            click,
+            subaction,
+            fill_value,
         } => Request::Nth {
             selector: selector.clone(),
             index: *index,
-            click: *click,
+            subaction: subaction.clone(),
+            fill_value: fill_value.clone(),
         },
         Command::Expose { name } => Request::Expose { name: name.clone() },
         Command::TabNew { url } => Request::TabNew { url: url.clone() },
@@ -456,6 +467,27 @@ pub fn build_request(cmd: &Command) -> Request {
                     .map(|c| c.split(',').map(|s| s.trim().to_owned()).collect())
                     .unwrap_or_default(),
             },
+        },
+        Command::Screencast {
+            action,
+            format,
+            quality,
+            max_width,
+            max_height,
+        } => match action.as_str() {
+            "stop" => Request::ScreencastStop,
+            _ => Request::ScreencastStart {
+                format: format.clone(),
+                quality: *quality,
+                max_width: *max_width,
+                max_height: *max_height,
+            },
+        },
+        Command::Har { action, output } => match action.as_str() {
+            "stop" => Request::HarStop {
+                path: output.clone(),
+            },
+            _ => Request::HarStart,
         },
         Command::AllowedDomains { domains } => Request::SetAllowedDomains {
             domains: domains.clone(),

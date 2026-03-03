@@ -8,6 +8,8 @@
 mod dispatch;
 mod domain_filter;
 mod handlers;
+pub mod auth_vault;
+pub mod policy;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -45,6 +47,12 @@ struct DaemonState {
     last_activity: tokio::time::Instant,
     /// Allowed domain patterns for navigation security filter.
     allowed_domains: Vec<String>,
+    /// Pending color scheme to apply after browser launch.
+    pending_color_scheme: Option<String>,
+    /// Action policy cache (hot-reloaded from file).
+    policy_cache: Option<policy::PolicyCache>,
+    /// HAR recording: captured entries while recording is active.
+    har_entries: Option<Vec<serde_json::Value>>,
 }
 
 /// A network interception rule.
@@ -89,6 +97,9 @@ pub async fn run_session(session: &str, idle_timeout: Option<Duration>) -> broth
         launch_config: None,
         last_activity: tokio::time::Instant::now(),
         allowed_domains: Vec::new(),
+        pending_color_scheme: None,
+        policy_cache: None,
+        har_entries: None,
     }));
 
     // Idle watcher

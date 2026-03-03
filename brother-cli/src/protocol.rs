@@ -49,6 +49,15 @@ pub enum Request {
         /// Viewport height (default 720).
         #[serde(default = "default_viewport_height")]
         viewport_height: u32,
+        /// Chrome extension paths to load (headed mode only).
+        #[serde(default)]
+        extensions: Vec<String>,
+        /// Preferred color scheme: `"light"`, `"dark"`, or `"no-preference"`.
+        #[serde(default)]
+        color_scheme: Option<String>,
+        /// Allowed domains — navigation to other domains will be blocked at launch.
+        #[serde(default)]
+        allowed_domains: Vec<String>,
     },
 
     /// Connect to an existing browser via CDP websocket URL or debugging port.
@@ -362,18 +371,25 @@ pub enum Request {
         forced_colors: Option<String>,
     },
     // -- Semantic locators --------------------------------------------------
-    /// Find elements by semantic locator (role, text, label, placeholder, testid).
+    /// Find elements by semantic locator and optionally act on them.
     Find {
-        /// Locator type: `role`, `text`, `label`, `placeholder`, `testid`.
+        /// Locator type: `role`, `text`, `label`, `placeholder`, `testid`, `alttext`, `title`.
         by: String,
         /// Value to search for.
         value: String,
         /// Optional name filter (only for `role` locator).
         #[serde(default)]
         name: Option<String>,
-        /// Exact text match (only for `text` locator, default false).
+        /// Exact text match (default false).
         #[serde(default)]
         exact: bool,
+        /// Optional sub-action: `click`, `fill`, `check`, `hover`.
+        /// If absent, returns matched elements without acting.
+        #[serde(default)]
+        subaction: Option<String>,
+        /// Value for `fill` sub-action.
+        #[serde(default)]
+        fill_value: Option<String>,
     },
 
     // -- Device / Environment emulation ------------------------------------
@@ -382,6 +398,8 @@ pub enum Request {
         /// Device name (e.g. `iphone-14`, `pixel-7`, `ipad-pro`).
         name: String,
     },
+    /// List all available device presets.
+    DeviceList,
     /// Toggle offline mode.
     Offline {
         /// `true` = offline, `false` = online.
@@ -587,15 +605,19 @@ pub enum Request {
         /// CSS selector.
         selector: String,
     },
-    /// Get or click the nth element matching a CSS selector (0-indexed).
+    /// Select the nth element matching a CSS selector and optionally act on it.
     Nth {
         /// CSS selector.
         selector: String,
-        /// 0-based index.
-        index: usize,
-        /// If true, click the element instead of just returning info.
+        /// 0-based index (-1 for last).
+        index: i64,
+        /// Sub-action: `click`, `fill`, `check`, `hover`, `text`.
+        /// If absent, returns element info.
         #[serde(default)]
-        click: bool,
+        subaction: Option<String>,
+        /// Value for `fill` sub-action.
+        #[serde(default)]
+        fill_value: Option<String>,
     },
     /// Expose a named function to the page's `window` object.
     Expose {
@@ -658,7 +680,16 @@ pub enum Request {
         session: bool,
     },
 
-    // -- Tab management -----------------------------------------------------
+    // -- Tab / Window management -----------------------------------------------
+    /// Open a new browser window (separate from tabs).
+    WindowNew {
+        /// Viewport width (default: inherit current).
+        #[serde(default)]
+        width: Option<u32>,
+        /// Viewport height (default: inherit current).
+        #[serde(default)]
+        height: Option<u32>,
+    },
     /// Open a new tab (optionally navigate to a URL).
     TabNew {
         /// URL to navigate to (defaults to `about:blank`).
@@ -788,6 +819,35 @@ pub enum Request {
         path: Option<String>,
     },
 
+    // -- Screencast -----------------------------------------------------------
+    /// Start CDP screencast (captures screen frames as base64 images).
+    ScreencastStart {
+        /// Image format: `jpeg` or `png`. Default: `jpeg`.
+        #[serde(default = "default_screencast_format")]
+        format: String,
+        /// JPEG quality (1–100). Default: 80. Ignored for PNG.
+        #[serde(default = "default_screencast_quality")]
+        quality: u32,
+        /// Max width for the captured frames.
+        #[serde(default)]
+        max_width: Option<u32>,
+        /// Max height for the captured frames.
+        #[serde(default)]
+        max_height: Option<u32>,
+    },
+    /// Stop CDP screencast.
+    ScreencastStop,
+
+    // -- HAR recording -------------------------------------------------------
+    /// Start recording HTTP traffic as HAR (HTTP Archive).
+    HarStart,
+    /// Stop HAR recording and save the archive.
+    HarStop {
+        /// File path to write the HAR JSON. If omitted, returns data inline.
+        #[serde(default)]
+        path: Option<String>,
+    },
+
     // -- Security -----------------------------------------------------------
     /// Set allowed domains — navigation to other domains will be blocked.
     SetAllowedDomains {
@@ -873,6 +933,16 @@ fn default_screenshot_format() -> String {
 
 /// Default JPEG quality.
 const fn default_jpeg_quality() -> u8 {
+    80
+}
+
+/// Default screencast format.
+fn default_screencast_format() -> String {
+    "jpeg".into()
+}
+
+/// Default screencast quality.
+const fn default_screencast_quality() -> u32 {
     80
 }
 

@@ -202,42 +202,84 @@ impl Page {
         Ok(())
     }
 
-    /// Get the nth element matching a CSS selector (0-indexed).
+    /// Select the nth element matching a CSS selector and optionally act on it.
     ///
-    /// Returns a JSON object with tag, text, and index.
+    /// `index` is 0-based; -1 means last element.
+    ///
+    /// Supported sub-actions: `click`, `fill`, `check`, `hover`, `text`.
+    /// If `subaction` is `None`, returns element info (tag, text, index, total).
     ///
     /// # Errors
     ///
-    /// Returns an error if the element is not found.
-    pub async fn nth(&self, selector: &str, index: usize) -> Result<serde_json::Value> {
+    /// Returns an error if the element is not found or the action fails.
+    pub async fn nth_action(
+        &self,
+        selector: &str,
+        index: i64,
+        subaction: Option<&str>,
+        fill_value: Option<&str>,
+    ) -> Result<serde_json::Value> {
         let escaped = selector.replace('\\', "\\\\").replace('\'', "\\'");
-        let js = format!(
-            r"(() => {{
-                const els = document.querySelectorAll('{escaped}');
-                if ({index} >= els.length) throw new Error('index {index} out of range, found ' + els.length + ' elements');
-                const el = els[{index}];
-                return {{ tag: el.tagName.toLowerCase(), text: el.textContent.trim().substring(0, 100), index: {index}, total: els.length }};
-            }})()"
-        );
-        self.eval(&js).await
-    }
 
-    /// Click the nth element matching a CSS selector (0-indexed).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the element is not found.
-    pub async fn click_nth(&self, selector: &str, index: usize) -> Result<()> {
-        let escaped = selector.replace('\\', "\\\\").replace('\'', "\\'");
-        let js = format!(
-            r"(() => {{
-                const els = document.querySelectorAll('{escaped}');
-                if ({index} >= els.length) throw new Error('index {index} out of range, found ' + els.length + ' elements');
-                els[{index}].click();
-            }})()"
+        // Build JS to resolve the nth element
+        let resolve = format!(
+            r"const els = document.querySelectorAll('{escaped}');
+            const idx = {index} < 0 ? els.length + {index} : {index};
+            if (idx < 0 || idx >= els.length) throw new Error('index {index} out of range, found ' + els.length + ' elements');
+            const el = els[idx];"
         );
-        self.eval(&js).await?;
-        Ok(())
+
+        let action_body = match subaction {
+            None => format!(
+                r"{resolve}
+                return {{ tag: el.tagName.toLowerCase(), text: el.textContent.trim().substring(0, 100), index: idx, total: els.length }};"
+            ),
+            Some("click") => format!(
+                r"{resolve}
+                el.scrollIntoView({{ block: 'center' }});
+                el.click();
+                return {{ action: 'click', tag: el.tagName.toLowerCase(), text: (el.textContent || '').trim().substring(0, 80) }};"
+            ),
+            Some("fill") => {
+                let fv = fill_value.unwrap_or("");
+                let efv = fv.replace('\\', "\\\\").replace('\'', "\\'");
+                format!(
+                    r"{resolve}
+                    el.scrollIntoView({{ block: 'center' }});
+                    el.focus();
+                    el.value = '';
+                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    el.value = '{efv}';
+                    el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    return {{ action: 'fill', tag: el.tagName.toLowerCase(), value: '{efv}' }};"
+                )
+            }
+            Some("check") => format!(
+                r"{resolve}
+                if (!el.checked) el.click();
+                return {{ action: 'check', tag: el.tagName.toLowerCase(), checked: el.checked }};"
+            ),
+            Some("hover") => format!(
+                r"{resolve}
+                el.scrollIntoView({{ block: 'center' }});
+                el.dispatchEvent(new MouseEvent('mouseover', {{ bubbles: true }}));
+                el.dispatchEvent(new MouseEvent('mouseenter', {{ bubbles: true }}));
+                return {{ action: 'hover', tag: el.tagName.toLowerCase(), text: (el.textContent || '').trim().substring(0, 80) }};"
+            ),
+            Some("text") => format!(
+                r"{resolve}
+                return {{ action: 'text', text: (el.textContent || '').trim() }};"
+            ),
+            Some(other) => {
+                return Err(Error::InvalidArgument(format!(
+                    "unknown nth subaction '{other}'. Use: click, fill, check, hover, text"
+                )));
+            }
+        };
+
+        let js = format!("(async () => {{ {action_body} }})()");
+        self.eval(&js).await
     }
 
     /// Highlight an element with a visible red border overlay.

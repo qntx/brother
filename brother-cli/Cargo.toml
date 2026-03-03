@@ -26,6 +26,8 @@ chromiumoxide = { workspace = true }
 anyhow = { workspace = true }
 toml = { workspace = true }
 png = { workspace = true }
+aes-gcm = { workspace = true }
+rand = { workspace = true }
 
 [lints]
 workspace = true

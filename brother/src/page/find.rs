@@ -205,6 +205,222 @@ impl Page {
         self.eval(&js).await
     }
 
+    /// Find an element by semantic locator and execute a sub-action on it.
+    ///
+    /// Supported locator types: `role`, `text`, `label`, `placeholder`,
+    /// `testid`, `alttext`, `title`.
+    ///
+    /// Supported sub-actions: `click`, `fill`, `check`, `hover`.
+    ///
+    /// Returns a JSON object describing the action taken.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the element is not found or the action fails.
+    pub async fn locator_action(
+        &self,
+        by: &str,
+        value: &str,
+        name: Option<&str>,
+        exact: bool,
+        subaction: &str,
+        fill_value: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let escaped_val = value.replace('\\', "\\\\").replace('\'', "\\'");
+
+        // Validate locator type early
+        if !matches!(
+            by,
+            "role" | "text" | "label" | "placeholder" | "testid" | "alttext" | "alt" | "title"
+        ) {
+            return Err(Error::InvalidArgument(format!(
+                "unknown locator type '{by}'. Use: role, text, label, placeholder, testid, alttext, title"
+            )));
+        }
+
+        // Build JS to find the element via DOM queries (chromiumoxide, not Playwright)
+        let find_js = self.build_locator_find_js(by, &escaped_val, name, exact);
+
+        let action_js = match subaction {
+            "click" => format!(
+                r"(async () => {{
+                    {find_js}
+                    if (!el) throw new Error('no element found for {by}={escaped_val}');
+                    el.scrollIntoView({{ block: 'center' }});
+                    el.click();
+                    return {{ action: 'click', tag: el.tagName.toLowerCase(), text: (el.textContent || '').trim().substring(0, 80) }};
+                }})()"
+            ),
+            "fill" => {
+                let fv = fill_value.unwrap_or("");
+                let escaped_fv = fv.replace('\\', "\\\\").replace('\'', "\\'");
+                format!(
+                    r"(async () => {{
+                        {find_js}
+                        if (!el) throw new Error('no element found for {by}={escaped_val}');
+                        el.scrollIntoView({{ block: 'center' }});
+                        el.focus();
+                        el.value = '';
+                        el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        el.value = '{escaped_fv}';
+                        el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        return {{ action: 'fill', tag: el.tagName.toLowerCase(), value: '{escaped_fv}' }};
+                    }})()"
+                )
+            }
+            "check" => format!(
+                r"(async () => {{
+                    {find_js}
+                    if (!el) throw new Error('no element found for {by}={escaped_val}');
+                    if (!el.checked) el.click();
+                    return {{ action: 'check', tag: el.tagName.toLowerCase(), checked: el.checked }};
+                }})()"
+            ),
+            "hover" => format!(
+                r"(async () => {{
+                    {find_js}
+                    if (!el) throw new Error('no element found for {by}={escaped_val}');
+                    el.scrollIntoView({{ block: 'center' }});
+                    el.dispatchEvent(new MouseEvent('mouseover', {{ bubbles: true }}));
+                    el.dispatchEvent(new MouseEvent('mouseenter', {{ bubbles: true }}));
+                    return {{ action: 'hover', tag: el.tagName.toLowerCase(), text: (el.textContent || '').trim().substring(0, 80) }};
+                }})()"
+            ),
+            other => {
+                return Err(Error::InvalidArgument(format!(
+                    "unknown subaction '{other}'. Use: click, fill, check, hover"
+                )));
+            }
+        };
+
+        self.eval(&action_js).await
+    }
+
+    /// Build JS code to find an element by locator type.
+    /// Sets variable `el` to the first matching element.
+    #[allow(clippy::unused_self)]
+    fn build_locator_find_js(
+        &self,
+        by: &str,
+        escaped_val: &str,
+        name: Option<&str>,
+        exact: bool,
+    ) -> String {
+        match by {
+            "role" => {
+                // Use the accessibility tree query via TreeWalker
+                let role_lower = escaped_val.to_lowercase();
+                let name_filter = name.map_or_else(String::new, |n| {
+                    let en = n.replace('\\', "\\\\").replace('\'', "\\'").to_lowercase();
+                    format!(
+                        " && (el.getAttribute('aria-label') || el.textContent || '').toLowerCase().includes('{en}')"
+                    )
+                });
+                format!(
+                    r"const el = (() => {{
+                        const all = document.querySelectorAll('[role]');
+                        for (const e of all) {{
+                            if (e.getAttribute('role').toLowerCase() === '{role_lower}'{name_filter}) return e;
+                        }}
+                        // Fallback: implicit roles via tag name
+                        const roleMap = {{ button: 'button', a: 'link', input: 'textbox', select: 'combobox', textarea: 'textbox', h1: 'heading', h2: 'heading', h3: 'heading', h4: 'heading', h5: 'heading', h6: 'heading' }};
+                        for (const e of document.querySelectorAll('*')) {{
+                            const implicit = roleMap[e.tagName.toLowerCase()];
+                            if (implicit === '{role_lower}'{name_filter}) return e;
+                        }}
+                        return null;
+                    }})();"
+                )
+            }
+            "text" => {
+                let cond = if exact {
+                    format!("el.textContent.trim() === '{escaped_val}'")
+                } else {
+                    format!(
+                        "el.textContent.toLowerCase().includes('{}')",
+                        escaped_val.to_lowercase()
+                    )
+                };
+                format!(
+                    r"const el = (() => {{
+                        for (const el of document.querySelectorAll('*')) {{
+                            if (el.children.length === 0 && {cond}) return el;
+                        }}
+                        return null;
+                    }})();"
+                )
+            }
+            "label" => {
+                let lower = escaped_val.to_lowercase();
+                format!(
+                    r"const el = (() => {{
+                        for (const lbl of document.querySelectorAll('label')) {{
+                            if (lbl.textContent.toLowerCase().includes('{lower}')) {{
+                                const forId = lbl.getAttribute('for');
+                                if (forId) return document.getElementById(forId);
+                                return lbl.querySelector('input,select,textarea');
+                            }}
+                        }}
+                        return null;
+                    }})();"
+                )
+            }
+            "placeholder" => {
+                let lower = escaped_val.to_lowercase();
+                let cond = if exact {
+                    format!("e.placeholder === '{escaped_val}'")
+                } else {
+                    format!("e.placeholder.toLowerCase().includes('{lower}')")
+                };
+                format!(
+                    r"const el = (() => {{
+                        for (const e of document.querySelectorAll('[placeholder]')) {{
+                            if ({cond}) return e;
+                        }}
+                        return null;
+                    }})();"
+                )
+            }
+            "testid" => format!(
+                r#"const el = document.querySelector('[data-testid="{escaped_val}"]');"#
+            ),
+            "alttext" | "alt" => {
+                let lower = escaped_val.to_lowercase();
+                let cond = if exact {
+                    format!("e.alt === '{escaped_val}'")
+                } else {
+                    format!("e.alt.toLowerCase().includes('{lower}')")
+                };
+                format!(
+                    r"const el = (() => {{
+                        for (const e of document.querySelectorAll('[alt]')) {{
+                            if ({cond}) return e;
+                        }}
+                        return null;
+                    }})();"
+                )
+            }
+            "title" => {
+                let lower = escaped_val.to_lowercase();
+                let cond = if exact {
+                    format!("e.title === '{escaped_val}'")
+                } else {
+                    format!("e.title.toLowerCase().includes('{lower}')")
+                };
+                format!(
+                    r"const el = (() => {{
+                        for (const e of document.querySelectorAll('[title]')) {{
+                            if ({cond}) return e;
+                        }}
+                        return null;
+                    }})();"
+                )
+            }
+            _ => "const el = null;".to_owned(),
+        }
+    }
+
     /// Find elements by `data-testid` attribute.
     ///
     /// # Errors

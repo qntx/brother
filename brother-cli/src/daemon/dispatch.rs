@@ -15,6 +15,23 @@ use super::{get_page, page_eval, page_ok, page_text, DaemonState};
     clippy::large_stack_frames
 )]
 pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> Response {
+    // Policy check: if a policy is loaded, verify the command is allowed.
+    {
+        let mut guard = state.lock().await;
+        if let Some(ref mut cache) = guard.policy_cache {
+            let cmd_name = request_cmd_name(&req);
+            let policy = cache.get();
+            if super::policy::check_policy(cmd_name, policy)
+                == super::policy::PolicyDecision::Deny
+            {
+                let category = super::policy::get_category(cmd_name).unwrap_or("unknown");
+                return Response::error(format!(
+                    "action denied by policy: command '{cmd_name}' (category '{category}') is not allowed"
+                ));
+            }
+        }
+    }
+
     match req {
         // -- Launch / Connection ----------------------------------------------
         Request::Launch {
@@ -28,6 +45,9 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
             download_path,
             viewport_width,
             viewport_height,
+            extensions,
+            color_scheme,
+            allowed_domains,
         } => {
             let mut guard = state.lock().await;
             if guard.browser.is_some() {
@@ -53,7 +73,17 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
             if let Some(dp) = download_path {
                 config = config.download_path(dp);
             }
-            config.args = extra_args;
+            // Extension paths → Chrome args
+            for ext in &extensions {
+                config.args.push(format!("--load-extension={ext}"));
+            }
+            config.args.extend(extra_args);
+            // Color scheme → emulation after launch
+            guard.pending_color_scheme = color_scheme;
+            // Allowed domains → set at launch time
+            if !allowed_domains.is_empty() {
+                guard.allowed_domains = allowed_domains;
+            }
             guard.launch_config = Some(config);
             Response::ok()
         }
@@ -255,11 +285,26 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
             value,
             name,
             exact,
+            subaction,
+            fill_value,
         } => {
             let page = match get_page(state).await {
                 Ok(p) => p,
                 Err(r) => return r,
             };
+
+            // If subaction is specified, use locator-based action (one-step)
+            if let Some(ref sub) = subaction {
+                match page
+                    .locator_action(&by, &value, name.as_deref(), exact, sub, fill_value.as_deref())
+                    .await
+                {
+                    Ok(val) => return Response::ok_data(ResponseData::Eval { value: val }),
+                    Err(e) => return Response::error(e.to_string()),
+                }
+            }
+
+            // No subaction: just find and return matches
             let result = match by.as_str() {
                 "role" => page.find_by_role(&value, name.as_deref()).await,
                 "text" => page.find_by_text(&value, exact).await,
@@ -284,22 +329,19 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
         Request::Nth {
             selector,
             index,
-            click,
+            subaction,
+            fill_value,
         } => {
             let page = match get_page(state).await {
                 Ok(p) => p,
                 Err(r) => return r,
             };
-            if click {
-                match page.click_nth(&selector, index).await {
-                    Ok(()) => Response::ok(),
-                    Err(e) => Response::error(e.to_string()),
-                }
-            } else {
-                match page.nth(&selector, index).await {
-                    Ok(val) => Response::ok_data(ResponseData::Eval { value: val }),
-                    Err(e) => Response::error(e.to_string()),
-                }
+            match page
+                .nth_action(&selector, index, subaction.as_deref(), fill_value.as_deref())
+                .await
+            {
+                Ok(val) => Response::ok_data(ResponseData::Eval { value: val }),
+                Err(e) => Response::error(e.to_string()),
             }
         }
         Request::Expose { name } => {
@@ -323,6 +365,28 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
         }
 
         // -- Environment emulation --------------------------------------------
+        Request::DeviceList => {
+            let names = brother::DevicePreset::list_names();
+            let descriptions: Vec<serde_json::Value> = names
+                .iter()
+                .filter_map(|n| {
+                    brother::DevicePreset::lookup(n).map(|p| {
+                        serde_json::json!({
+                            "name": p.name,
+                            "width": p.width,
+                            "height": p.height,
+                            "user_agent": p.user_agent,
+                        })
+                    })
+                })
+                .collect();
+            Response::ok_data(ResponseData::Eval {
+                value: serde_json::Value::Array(descriptions),
+            })
+        }
+        Request::WindowNew { width, height } => {
+            super::handlers::cmd_window_new(state, width, height).await
+        }
         Request::Device { name } => {
             let Some(preset) = brother::DevicePreset::lookup(&name) else {
                 let names = brother::DevicePreset::list_names().join(", ");
@@ -611,6 +675,58 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
             super::handlers::cmd_profiler_stop(state, path.as_deref()).await
         }
 
+        // -- Screencast -------------------------------------------------------
+        Request::ScreencastStart {
+            format,
+            quality,
+            max_width,
+            max_height,
+        } => {
+            use chromiumoxide::cdp::browser_protocol::page::{
+                StartScreencastFormat, StartScreencastParams,
+            };
+            let page = match get_page(state).await {
+                Ok(p) => p,
+                Err(r) => return r,
+            };
+            let fmt = if format == "png" {
+                StartScreencastFormat::Png
+            } else {
+                StartScreencastFormat::Jpeg
+            };
+            let params = StartScreencastParams::builder()
+                .format(fmt)
+                .quality(i64::from(quality))
+                .max_width(i64::from(max_width.unwrap_or(1280)))
+                .max_height(i64::from(max_height.unwrap_or(720)))
+                .build();
+            match page.inner().execute(params).await {
+                Ok(_) => Response::ok_data(ResponseData::Text {
+                    text: format!("screencast started ({format}, quality={quality})"),
+                }),
+                Err(e) => Response::error(format!("screencast start failed: {e}")),
+            }
+        }
+        Request::ScreencastStop => {
+            use chromiumoxide::cdp::browser_protocol::page::StopScreencastParams;
+            let page = match get_page(state).await {
+                Ok(p) => p,
+                Err(r) => return r,
+            };
+            match page.inner().execute(StopScreencastParams::default()).await {
+                Ok(_) => Response::ok_data(ResponseData::Text {
+                    text: "screencast stopped".to_owned(),
+                }),
+                Err(e) => Response::error(format!("screencast stop failed: {e}")),
+            }
+        }
+
+        // -- HAR recording ----------------------------------------------------
+        Request::HarStart => super::handlers::cmd_har_start(state).await,
+        Request::HarStop { path } => {
+            super::handlers::cmd_har_stop(state, path.as_deref()).await
+        }
+
         // -- Security ---------------------------------------------------------
         Request::SetAllowedDomains { domains } => {
             super::handlers::cmd_set_allowed_domains(state, domains).await
@@ -631,5 +747,135 @@ pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> R
             })
         }
         Request::Close => Response::ok(),
+    }
+}
+
+/// Extract the `snake_case` command name from a [`Request`] variant.
+///
+/// This uses the serde tag naming convention (`rename_all = "snake_case"`).
+const fn request_cmd_name(req: &Request) -> &'static str {
+    match req {
+        Request::Launch { .. } => "launch",
+        Request::Connect { .. } => "connect",
+        Request::Navigate { .. } => "navigate",
+        Request::Back => "back",
+        Request::Forward => "forward",
+        Request::Reload => "reload",
+        Request::Snapshot { .. } => "snapshot",
+        Request::Screenshot { .. } => "screenshot",
+        Request::Eval { .. } => "eval",
+        Request::Click { .. } => "click",
+        Request::DblClick { .. } => "dbl_click",
+        Request::Fill { .. } => "fill",
+        Request::Type { .. } => "type",
+        Request::Press { .. } => "press",
+        Request::Select { .. } => "select",
+        Request::Check { .. } => "check",
+        Request::Uncheck { .. } => "uncheck",
+        Request::Hover { .. } => "hover",
+        Request::Focus { .. } => "focus",
+        Request::Scroll { .. } => "scroll",
+        Request::Frame { .. } => "frame",
+        Request::MainFrame => "main_frame",
+        Request::KeyDown { .. } => "key_down",
+        Request::KeyUp { .. } => "key_up",
+        Request::InsertText { .. } => "insert_text",
+        Request::Upload { .. } => "upload",
+        Request::Drag { .. } => "drag",
+        Request::Clear { .. } => "clear",
+        Request::ScrollIntoView { .. } => "scroll_into_view",
+        Request::BoundingBox { .. } => "bounding_box",
+        Request::SetContent { .. } => "set_content",
+        Request::Pdf { .. } => "pdf",
+        Request::Route { .. } => "route",
+        Request::Unroute { .. } => "unroute",
+        Request::Requests { .. } => "requests",
+        Request::SetDownloadPath { .. } => "set_download_path",
+        Request::Downloads { .. } => "downloads",
+        Request::Download { .. } => "download",
+        Request::WaitForDownload { .. } => "wait_for_download",
+        Request::ResponseBody { .. } => "response_body",
+        Request::ClipboardRead => "clipboard_read",
+        Request::ClipboardWrite { .. } => "clipboard_write",
+        Request::Viewport { .. } => "viewport",
+        Request::EmulateMedia { .. } => "emulate_media",
+        Request::Find { .. } => "find",
+        Request::Device { .. } => "device",
+        Request::DeviceList => "device_list",
+        Request::Offline { .. } => "offline",
+        Request::ExtraHeaders { .. } => "extra_headers",
+        Request::Geolocation { .. } => "geolocation",
+        Request::Credentials { .. } => "credentials",
+        Request::UserAgent { .. } => "user_agent",
+        Request::Timezone { .. } => "timezone",
+        Request::Locale { .. } => "locale",
+        Request::Permissions { .. } => "permissions",
+        Request::BringToFront => "bring_to_front",
+        Request::AddInitScript { .. } => "add_init_script",
+        Request::AddScript { .. } => "add_script",
+        Request::AddStyle { .. } => "add_style",
+        Request::Dispatch { .. } => "dispatch",
+        Request::Styles { .. } => "styles",
+        Request::SelectAll { .. } => "select_all",
+        Request::Highlight { .. } => "highlight",
+        Request::MouseMove { .. } => "mouse_move",
+        Request::MouseDown { .. } => "mouse_down",
+        Request::MouseUp { .. } => "mouse_up",
+        Request::Wheel { .. } => "wheel",
+        Request::Tap { .. } => "tap",
+        Request::SetValue { .. } => "set_value",
+        Request::GetText { .. } => "get_text",
+        Request::GetInnerText { .. } => "get_inner_text",
+        Request::GetContent => "get_content",
+        Request::GetUrl => "get_url",
+        Request::GetTitle => "get_title",
+        Request::GetHtml { .. } => "get_html",
+        Request::GetValue { .. } => "get_value",
+        Request::GetAttribute { .. } => "get_attribute",
+        Request::IsVisible { .. } => "is_visible",
+        Request::IsEnabled { .. } => "is_enabled",
+        Request::IsChecked { .. } => "is_checked",
+        Request::Count { .. } => "count",
+        Request::Nth { .. } => "nth",
+        Request::Expose { .. } => "expose",
+        Request::Wait { .. } => "wait",
+        Request::DialogMessage => "dialog_message",
+        Request::DialogAccept { .. } => "dialog_accept",
+        Request::DialogDismiss => "dialog_dismiss",
+        Request::GetCookies => "get_cookies",
+        Request::SetCookies { .. } => "set_cookies",
+        Request::SetCookie { .. } => "set_cookie",
+        Request::ClearCookies => "clear_cookies",
+        Request::GetStorage { .. } => "get_storage",
+        Request::SetStorage { .. } => "set_storage",
+        Request::ClearStorage { .. } => "clear_storage",
+        Request::WindowNew { .. } => "window_new",
+        Request::TabNew { .. } => "tab_new",
+        Request::TabList => "tab_list",
+        Request::TabSelect { .. } => "tab_select",
+        Request::TabClose { .. } => "tab_close",
+        Request::Console { .. } => "console",
+        Request::Errors { .. } => "errors",
+        Request::DiffSnapshot { .. } => "diff_snapshot",
+        Request::DiffScreenshot { .. } => "diff_screenshot",
+        Request::DiffUrl { .. } => "diff_url",
+        Request::StateSave { .. } => "state_save",
+        Request::StateLoad { .. } => "state_load",
+        Request::StateList => "state_list",
+        Request::StateClear { .. } => "state_clear",
+        Request::StateShow { .. } => "state_show",
+        Request::StateClean { .. } => "state_clean",
+        Request::StateRename { .. } => "state_rename",
+        Request::TraceStart { .. } => "trace_start",
+        Request::TraceStop { .. } => "trace_stop",
+        Request::ProfilerStart { .. } => "profiler_start",
+        Request::ProfilerStop { .. } => "profiler_stop",
+        Request::ScreencastStart { .. } => "screencast_start",
+        Request::ScreencastStop => "screencast_stop",
+        Request::HarStart => "har_start",
+        Request::HarStop { .. } => "har_stop",
+        Request::SetAllowedDomains { .. } => "set_allowed_domains",
+        Request::Status => "status",
+        Request::Close => "close",
     }
 }

@@ -175,5 +175,8 @@ fn build_launch(cli: &Cli, cfg: &config::Config) -> Option<protocol::Request> {
         download_path,
         viewport_width: 1280,
         viewport_height: 720,
+        extensions: Vec::new(),
+        color_scheme: None,
+        allowed_domains: Vec::new(),
     })
 }

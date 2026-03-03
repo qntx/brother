@@ -259,22 +259,25 @@ pub enum Command {
         /// Ref or CSS selector.
         target: String,
     },
-    /// Get or click the nth element matching a CSS selector (0-indexed).
+    /// Select the nth element and optionally act on it (0-indexed, -1 for last).
     Nth {
         /// CSS selector.
         selector: String,
-        /// 0-based index.
-        index: usize,
-        /// Click the element instead of just returning info.
+        /// 0-based index (-1 for last).
+        index: i64,
+        /// Sub-action: `click`, `fill`, `check`, `hover`, `text`.
+        #[arg(short, long)]
+        subaction: Option<String>,
+        /// Value for `fill` sub-action.
         #[arg(long)]
-        click: bool,
+        fill_value: Option<String>,
     },
     /// Expose a named function to the page's `window` object.
     Expose {
         /// Function name (e.g. `myCallback`).
         name: String,
     },
-    /// Find elements by semantic locator.
+    /// Find elements by semantic locator and optionally act on them.
     Find {
         /// Locator type: `role`, `text`, `label`, `placeholder`, `testid`, `alttext`, `title`.
         by: String,
@@ -286,11 +289,28 @@ pub enum Command {
         /// Exact match (for `text`, `alttext`, `title` locators).
         #[arg(long)]
         exact: bool,
+        /// Sub-action: `click`, `fill`, `check`, `hover`. If omitted, just list matches.
+        #[arg(short, long)]
+        subaction: Option<String>,
+        /// Value for `fill` sub-action.
+        #[arg(long)]
+        fill_value: Option<String>,
     },
     /// Emulate a device preset (viewport + user-agent).
     Device {
         /// Device name (e.g. `iphone-14`, `pixel-7`, `ipad-pro`, `desktop-hd`).
         name: String,
+    },
+    /// List all available device presets.
+    DeviceList,
+    /// Open a new browser window.
+    WindowNew {
+        /// Viewport width.
+        #[arg(long)]
+        width: Option<u32>,
+        /// Viewport height.
+        #[arg(long)]
+        height: Option<u32>,
     },
     /// Set viewport size.
     Viewport {
@@ -623,6 +643,35 @@ pub enum Command {
         #[arg(short, long)]
         categories: Option<String>,
         /// File path to write profile output (stop only).
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+
+    // -- Screencast ---------------------------------------------------------
+    /// Start or stop CDP screencast (screen frame capture).
+    Screencast {
+        /// `start` or `stop`.
+        action: String,
+        /// Image format: `jpeg` or `png`.
+        #[arg(long, default_value = "jpeg")]
+        format: String,
+        /// JPEG quality (1–100).
+        #[arg(long, default_value = "80")]
+        quality: u32,
+        /// Max width for captured frames.
+        #[arg(long)]
+        max_width: Option<u32>,
+        /// Max height for captured frames.
+        #[arg(long)]
+        max_height: Option<u32>,
+    },
+
+    // -- HAR recording -----------------------------------------------------
+    /// Start or stop HAR (HTTP Archive) recording.
+    Har {
+        /// `start` or `stop`.
+        action: String,
+        /// File path to write the HAR JSON (stop only).
         #[arg(short, long)]
         output: Option<String>,
     },

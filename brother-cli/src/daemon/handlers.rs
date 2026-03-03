@@ -755,8 +755,35 @@ pub(super) async fn cmd_response_body(
 }
 
 // ---------------------------------------------------------------------------
-// Tab management
+// Tab / Window management
 // ---------------------------------------------------------------------------
+
+pub(super) async fn cmd_window_new(
+    state: &Arc<Mutex<DaemonState>>,
+    width: Option<u32>,
+    height: Option<u32>,
+) -> Response {
+    ensure_browser(state).await.ok();
+    let mut guard = state.lock().await;
+    let Some(ref browser) = guard.browser else {
+        return Response::error("no browser running");
+    };
+    // Create a new page (new window in headed mode, new tab in headless)
+    match browser.new_page("about:blank").await {
+        Ok(page) => {
+            // Set viewport if dimensions provided
+            if let (Some(w), Some(h)) = (width, height) {
+                let _ = page.set_viewport(w, h).await;
+            }
+            guard.pages.push(page);
+            guard.active_tab = guard.pages.len() - 1;
+            Response::ok_data(ResponseData::Text {
+                text: format!("window {} opened", guard.active_tab),
+            })
+        }
+        Err(e) => Response::error(format!("window new failed: {e}")),
+    }
+}
 
 pub(super) async fn cmd_tab_new(
     state: &Arc<Mutex<DaemonState>>,
@@ -840,3 +867,116 @@ pub(super) async fn cmd_tab_close(
 }
 // Diff, State, and Trace/Profiler handlers are in submodules:
 // see `diff.rs`, `state.rs`, `trace.rs` in the `handlers/` directory.
+
+// ---------------------------------------------------------------------------
+// HAR recording
+// ---------------------------------------------------------------------------
+
+pub(super) async fn cmd_har_start(state: &Arc<Mutex<DaemonState>>) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    // Enable Network domain to capture requests
+    let js = r"(() => {
+        if (!window.__brother_har) {
+            window.__brother_har = [];
+            const origFetch = window.fetch;
+            window.fetch = function(...args) {
+                const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
+                const method = args[1]?.method || 'GET';
+                const start = Date.now();
+                return origFetch.apply(this, args).then(resp => {
+                    window.__brother_har.push({
+                        startedDateTime: new Date(start).toISOString(),
+                        request: { method, url },
+                        response: { status: resp.status, statusText: resp.statusText },
+                        time: Date.now() - start
+                    });
+                    return resp;
+                });
+            };
+            const origXHR = XMLHttpRequest.prototype.open;
+            XMLHttpRequest.prototype.open = function(method, url) {
+                this.__har_method = method;
+                this.__har_url = url;
+                this.__har_start = Date.now();
+                this.addEventListener('load', function() {
+                    window.__brother_har.push({
+                        startedDateTime: new Date(this.__har_start).toISOString(),
+                        request: { method: this.__har_method, url: this.__har_url },
+                        response: { status: this.status, statusText: this.statusText },
+                        time: Date.now() - this.__har_start
+                    });
+                });
+                return origXHR.apply(this, arguments);
+            };
+        }
+        return { recording: true };
+    })()";
+
+    match page.eval(js).await {
+        Ok(_) => {
+            let mut guard = state.lock().await;
+            guard.har_entries = Some(Vec::new());
+            Response::ok_data(ResponseData::Text {
+                text: "HAR recording started".to_owned(),
+            })
+        }
+        Err(e) => Response::error(format!("har start failed: {e}")),
+    }
+}
+
+pub(super) async fn cmd_har_stop(
+    state: &Arc<Mutex<DaemonState>>,
+    path: Option<&str>,
+) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    // Collect captured entries from JS
+    let js = r"(() => {
+        const entries = window.__brother_har || [];
+        delete window.__brother_har;
+        return JSON.stringify(entries);
+    })()";
+
+    let entries_val = match page.eval(js).await {
+        Ok(v) => v,
+        Err(e) => return Response::error(format!("har stop failed: {e}")),
+    };
+
+    let entries_str = entries_val.as_str().unwrap_or("[]");
+    let entries: Vec<serde_json::Value> =
+        serde_json::from_str(entries_str).unwrap_or_default();
+
+    // Build HAR 1.2 format
+    let har = serde_json::json!({
+        "log": {
+            "version": "1.2",
+            "creator": { "name": "brother", "version": env!("CARGO_PKG_VERSION") },
+            "entries": entries,
+        }
+    });
+
+    // Clear recording state
+    {
+        let mut guard = state.lock().await;
+        guard.har_entries = None;
+    }
+
+    // Save to file if path provided
+    if let Some(p) = path {
+        match std::fs::write(p, serde_json::to_string_pretty(&har).unwrap_or_default()) {
+            Ok(()) => Response::ok_data(ResponseData::Text {
+                text: format!("HAR saved to {p} ({} entries)", entries.len()),
+            }),
+            Err(e) => Response::error(format!("cannot write HAR file: {e}")),
+        }
+    } else {
+        Response::ok_data(ResponseData::Eval { value: har })
+    }
+}

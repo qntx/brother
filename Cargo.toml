@@ -29,6 +29,8 @@ url = "2"
 dirs = "6"
 toml = "0.8"
 png = "0.17"
+aes-gcm = "0.10"
+rand = "0.8"
 
 [profile.release]
 codegen-units = 1
