@@ -1,0 +1,543 @@
+//! CLI command definitions (clap subcommands).
+
+use clap::Subcommand;
+
+#[derive(Subcommand)]
+pub enum Command {
+    /// Connect to an existing browser (requires Chrome launched with --remote-debugging-port).
+    Connect {
+        /// CDP target: port number (e.g. `9222`), ws:// URL, or http:// URL.
+        #[arg(default_value = "9222")]
+        target: String,
+    },
+    /// Navigate to a URL.
+    Open {
+        /// Target URL.
+        url: String,
+    },
+    /// Capture an accessibility snapshot.
+    Snapshot {
+        /// Only interactive elements.
+        #[arg(short, long)]
+        interactive: bool,
+        /// Remove empty structural nodes.
+        #[arg(short, long)]
+        compact: bool,
+        /// Maximum tree depth (0 = unlimited).
+        #[arg(short, long, default_value_t = 0)]
+        depth: usize,
+        /// CSS selector to scope the snapshot subtree.
+        #[arg(short, long)]
+        selector: Option<String>,
+        /// Also detect cursor-interactive elements (cursor:pointer, onclick).
+        #[arg(short = 'C', long)]
+        cursor: bool,
+    },
+    /// Click an element by ref (`@e1`) or CSS selector.
+    Click {
+        /// Ref or CSS selector.
+        target: String,
+        /// Mouse button: `left`, `right`, `middle`.
+        #[arg(short, long, default_value = "left")]
+        button: String,
+        /// Number of clicks (use 2 for double-click).
+        #[arg(short = 'n', long, default_value = "1")]
+        click_count: u32,
+        /// Delay in ms between mouse-down and mouse-up (0 = instant).
+        #[arg(long, default_value = "0")]
+        delay: u64,
+    },
+    /// Double-click an element.
+    Dblclick {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Clear and fill an input.
+    Fill {
+        /// Ref or CSS selector.
+        target: String,
+        /// Value to fill.
+        value: String,
+    },
+    /// Type text (append by default, use `--clear` to clear first).
+    Type {
+        /// Text to type.
+        text: String,
+        /// Optional ref or CSS selector to focus first.
+        #[arg(short, long)]
+        target: Option<String>,
+        /// Delay between keystrokes in ms (0 = no delay).
+        #[arg(short, long, default_value = "0")]
+        delay: u64,
+        /// Clear existing content before typing.
+        #[arg(long)]
+        clear: bool,
+    },
+    /// Press a key combo (e.g. `Enter`, `Control+a`).
+    Press {
+        /// Key or key combo.
+        key: String,
+    },
+    /// Select dropdown option(s) by value.
+    Select {
+        /// Ref or CSS selector of the `<select>`.
+        target: String,
+        /// Option value(s) to select (supports multi-select).
+        #[arg(required = true)]
+        values: Vec<String>,
+    },
+    /// Check a checkbox.
+    Check {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Uncheck a checkbox.
+    Uncheck {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Hover an element.
+    Hover {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Focus an element.
+    Focus {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Scroll the page or an element.
+    Scroll {
+        /// Direction: `up`, `down`, `left`, `right`.
+        direction: String,
+        /// Pixels to scroll (default 500).
+        #[arg(short, long, default_value = "500")]
+        pixels: i64,
+        /// Optional target to scroll.
+        #[arg(short, long)]
+        target: Option<String>,
+    },
+    /// Switch to a child frame (iframe) by name, URL, or index.
+    Frame {
+        /// Frame name, URL substring, or numeric index.
+        selector: String,
+    },
+    /// Switch back to the main (top-level) frame.
+    MainFrame,
+    /// Hold a key down (without releasing).
+    KeyDown {
+        /// Key name (e.g. `Shift`, `a`).
+        key: String,
+    },
+    /// Release a held key.
+    KeyUp {
+        /// Key name (e.g. `Shift`, `a`).
+        key: String,
+    },
+    /// Insert text directly (no key events).
+    InsertText {
+        /// Text to insert.
+        text: String,
+    },
+    /// Upload files to a file input.
+    Upload {
+        /// Ref or CSS selector of the `<input type="file">`.
+        target: String,
+        /// File paths to upload.
+        #[arg(required = true)]
+        files: Vec<String>,
+    },
+    /// Drag one element onto another.
+    Drag {
+        /// Source ref or CSS selector.
+        source: String,
+        /// Drop target ref or CSS selector.
+        target: String,
+    },
+    /// Clear an input field.
+    Clear {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Scroll an element into view.
+    ScrollIntoView {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Get bounding box (x, y, width, height) of an element.
+    BoundingBox {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Set the page HTML content directly.
+    SetContent {
+        /// HTML content.
+        html: String,
+    },
+    /// Export the page as PDF.
+    Pdf {
+        /// Output file path.
+        #[arg(default_value = "page.pdf")]
+        path: String,
+    },
+    /// Capture a screenshot.
+    Screenshot {
+        /// Output file path.
+        #[arg(short, long, default_value = "screenshot.png")]
+        output: String,
+        /// Capture the full scrollable page.
+        #[arg(long)]
+        full_page: bool,
+        /// CSS selector to screenshot a specific element.
+        #[arg(short, long)]
+        selector: Option<String>,
+        /// Image format: `png` or `jpeg`.
+        #[arg(short, long, default_value = "png")]
+        format: String,
+        /// JPEG quality (1-100).
+        #[arg(short, long, default_value = "80")]
+        quality: u8,
+    },
+    /// Evaluate a `JavaScript` expression.
+    Eval {
+        /// JS expression.
+        expression: String,
+    },
+    /// Get text content of the page or an element.
+    #[command(name = "get")]
+    Get {
+        /// What to get: `text`, `innertext`, `content`, `url`, `title`, `html`, `value`, `attribute`.
+        what: String,
+        /// Optional target (ref or CSS selector).
+        target: Option<String>,
+        /// Attribute name (for `get attribute`).
+        #[arg(short, long)]
+        attr: Option<String>,
+    },
+    /// Go back in history.
+    Back,
+    /// Go forward in history.
+    Forward,
+    /// Reload the current page.
+    Reload,
+    /// Wait for a condition.
+    Wait {
+        /// CSS selector, duration (ms), or omit for flag-based wait.
+        target: Option<String>,
+        /// Wait for text to appear.
+        #[arg(long)]
+        text: Option<String>,
+        /// Wait for URL to match.
+        #[arg(long)]
+        url: Option<String>,
+        /// Wait for load state (`load`|`domcontentloaded`|`networkidle`).
+        #[arg(long)]
+        load: Option<String>,
+        /// Wait for a JS expression to be truthy.
+        #[arg(long, name = "fn")]
+        function: Option<String>,
+        /// Timeout in ms (default 30000).
+        #[arg(short, long, default_value = "30000")]
+        timeout: u64,
+    },
+    /// Query element state: visible, enabled, checked, or count elements.
+    #[command(name = "query")]
+    StateCheck {
+        /// What to check: `visible`, `enabled`, `checked`, `count`.
+        what: String,
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Set viewport size.
+    Viewport {
+        /// Width in pixels.
+        width: u32,
+        /// Height in pixels.
+        height: u32,
+    },
+    /// Emulate media features (color scheme, print, reduced motion, forced colors).
+    EmulateMedia {
+        /// Media type: `screen`, `print`.
+        #[arg(short, long)]
+        media: Option<String>,
+        /// Color scheme: `light`, `dark`, `no-preference`.
+        #[arg(short, long)]
+        color_scheme: Option<String>,
+        /// Reduced motion: `reduce`, `no-preference`.
+        #[arg(short, long)]
+        reduced_motion: Option<String>,
+        /// Forced colors: `active`, `none`.
+        #[arg(short, long)]
+        forced_colors: Option<String>,
+    },
+    /// Toggle offline mode.
+    Offline {
+        /// `true` or `false`.
+        offline: bool,
+    },
+    /// Set extra HTTP headers (JSON string).
+    ExtraHeaders {
+        /// JSON object, e.g. `{"X-Custom": "value"}`.
+        headers_json: String,
+    },
+    /// Override geolocation.
+    Geolocation {
+        /// Latitude.
+        latitude: f64,
+        /// Longitude.
+        longitude: f64,
+        /// Accuracy in meters.
+        #[arg(short, long, default_value = "1.0")]
+        accuracy: f64,
+    },
+    /// Set HTTP Basic Auth credentials.
+    Credentials {
+        /// Username.
+        username: String,
+        /// Password.
+        password: String,
+    },
+    /// Override the browser user-agent string.
+    UserAgent {
+        /// User-agent string.
+        user_agent: String,
+    },
+    /// Override the timezone.
+    Timezone {
+        /// IANA timezone ID (e.g. `America/New_York`).
+        timezone_id: String,
+    },
+    /// Override the locale.
+    Locale {
+        /// Locale string (e.g. `en-US`).
+        locale: String,
+    },
+    /// Grant or revoke browser permissions.
+    Permissions {
+        /// Permission names (e.g. `geolocation`, `notifications`).
+        #[arg(required = true)]
+        permissions: Vec<String>,
+        /// Deny instead of grant.
+        #[arg(long)]
+        deny: bool,
+    },
+    /// Bring the current page to front.
+    BringToFront,
+    /// Get computed styles of an element.
+    Styles {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Select all text in an element.
+    SelectAll {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Highlight an element with a red border (for debugging).
+    Highlight {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Move the mouse to absolute coordinates.
+    MouseMove {
+        /// X coordinate.
+        x: f64,
+        /// Y coordinate.
+        y: f64,
+    },
+    /// Scroll with the mouse wheel.
+    Wheel {
+        /// Vertical scroll delta (pixels, positive = down).
+        #[arg(default_value = "0")]
+        delta_y: f64,
+        /// Horizontal scroll delta.
+        #[arg(short = 'x', long, default_value = "0")]
+        delta_x: f64,
+        /// Optional CSS selector to hover first.
+        #[arg(short, long)]
+        selector: Option<String>,
+    },
+    /// Touch-tap an element.
+    Tap {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Set an input value directly (no events).
+    SetValue {
+        /// Ref or CSS selector.
+        target: String,
+        /// Value to set.
+        value: String,
+    },
+    /// Press a mouse button down.
+    MouseDown {
+        /// Button: `left`, `right`, `middle`.
+        #[arg(short, long, default_value = "left")]
+        button: String,
+    },
+    /// Release a mouse button.
+    MouseUp {
+        /// Button: `left`, `right`, `middle`.
+        #[arg(short, long, default_value = "left")]
+        button: String,
+    },
+    /// Add a script to run on every new document (before page JS).
+    AddInitScript {
+        /// `JavaScript` source code.
+        script: String,
+    },
+    /// Inject a `<script>` tag into the current page.
+    AddScript {
+        /// Inline JS content.
+        #[arg(short, long)]
+        content: Option<String>,
+        /// External script URL.
+        #[arg(short, long)]
+        url: Option<String>,
+    },
+    /// Inject a `<style>` or `<link>` tag into the current page.
+    AddStyle {
+        /// Inline CSS content.
+        #[arg(short, long)]
+        content: Option<String>,
+        /// External stylesheet URL.
+        #[arg(short, long)]
+        url: Option<String>,
+    },
+    /// Dispatch a DOM event on an element.
+    Dispatch {
+        /// Ref or CSS selector.
+        target: String,
+        /// Event name (e.g. `click`, `input`, `change`).
+        event: String,
+        /// Optional JSON `EventInit` (e.g. `{"bubbles":true}`).
+        #[arg(short, long)]
+        init: Option<String>,
+    },
+    /// Read text from the clipboard.
+    ClipboardRead,
+    /// Write text to the clipboard.
+    ClipboardWrite {
+        /// Text to write.
+        text: String,
+    },
+    /// Set download directory path.
+    SetDownloadPath {
+        /// Absolute directory path.
+        path: String,
+    },
+    /// List files in the download directory.
+    Downloads {
+        /// Optional: `clear` to clear the log.
+        action: Option<String>,
+    },
+    /// Wait for a download to complete.
+    WaitForDownload {
+        /// Optional path to save the file.
+        #[arg(short, long)]
+        path: Option<String>,
+        /// Timeout in ms (default 30000).
+        #[arg(short, long, default_value = "30000")]
+        timeout: u64,
+    },
+    /// Wait for and capture a network response body matching a URL pattern.
+    ResponseBody {
+        /// URL substring to match.
+        url: String,
+        /// Timeout in ms (default 30000).
+        #[arg(short, long, default_value = "30000")]
+        timeout: u64,
+    },
+    /// Intercept network requests matching a URL pattern.
+    Route {
+        /// URL substring to match.
+        pattern: String,
+        /// Action: `fulfill` or `abort`.
+        #[arg(short, long, default_value = "abort")]
+        action: String,
+        /// HTTP status code (for fulfill).
+        #[arg(short, long, default_value = "200")]
+        status: u16,
+        /// Response body (for fulfill).
+        #[arg(short, long, default_value = "")]
+        body: String,
+        /// Content-Type header (for fulfill).
+        #[arg(short, long, default_value = "text/plain")]
+        content_type: String,
+    },
+    /// Remove a network route. Use `*` to remove all.
+    Unroute {
+        /// URL pattern to remove, or `*` for all.
+        pattern: String,
+    },
+    /// List captured network requests.
+    Requests {
+        /// Optional: `clear` to clear the buffer.
+        action: Option<String>,
+        /// URL pattern to filter results.
+        #[arg(short, long)]
+        filter: Option<String>,
+    },
+    /// Dialog handling: message, accept, dismiss.
+    Dialog {
+        /// Action: `message`, `accept`, `dismiss`.
+        action: String,
+        /// Prompt text (for `accept` on prompt dialogs).
+        text: Option<String>,
+    },
+    /// Cookie management: get, set, clear.
+    Cookie {
+        /// Action: `get`, `set`, `clear`.
+        action: String,
+        /// Cookie string for `set` (e.g. `"name=value; path=/"`).
+        value: Option<String>,
+    },
+    /// Storage management: get, set, clear.
+    Storage {
+        /// Action: `get`, `set`, `clear`.
+        action: String,
+        /// Key for get/set.
+        key: Option<String>,
+        /// Value for set.
+        value: Option<String>,
+        /// Use sessionStorage instead of localStorage.
+        #[arg(short, long)]
+        session: bool,
+    },
+    /// Open a new tab.
+    TabNew {
+        /// URL to open (defaults to about:blank).
+        url: Option<String>,
+    },
+    /// List all open tabs.
+    TabList,
+    /// Switch to a tab by index.
+    TabSelect {
+        /// Tab index (0-based).
+        index: usize,
+    },
+    /// Close a tab by index.
+    TabClose {
+        /// Tab index (0-based, defaults to active tab).
+        index: Option<usize>,
+    },
+    /// Get captured console messages (drains buffer).
+    Console {
+        /// Clear logs without returning them.
+        #[arg(long)]
+        clear: bool,
+    },
+    /// Get captured JS errors (drains buffer).
+    Errors {
+        /// Clear errors without returning them.
+        #[arg(long)]
+        clear: bool,
+    },
+    /// Check daemon and browser status.
+    Status,
+    /// Close the browser and stop the daemon.
+    Close,
+    /// (Hidden) Run the daemon server.
+    #[command(hide = true)]
+    Daemon,
+}

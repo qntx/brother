@@ -34,6 +34,12 @@ pub struct BrowserConfig {
 
     /// Sandbox mode. Disabled by default for container compatibility.
     pub sandbox: bool,
+
+    /// Ignore HTTPS/TLS certificate errors. Defaults to `false`.
+    pub ignore_https_errors: bool,
+
+    /// Default download directory for browser downloads.
+    pub download_path: Option<PathBuf>,
 }
 
 impl Default for BrowserConfig {
@@ -49,6 +55,8 @@ impl Default for BrowserConfig {
             user_agent: None,
             disable_gpu: true,
             sandbox: false,
+            ignore_https_errors: false,
+            download_path: None,
         }
     }
 }
@@ -97,6 +105,20 @@ impl BrowserConfig {
         self
     }
 
+    /// Ignore HTTPS/TLS certificate errors (useful for self-signed certs).
+    #[must_use]
+    pub const fn ignore_https_errors(mut self, ignore: bool) -> Self {
+        self.ignore_https_errors = ignore;
+        self
+    }
+
+    /// Set default download directory.
+    #[must_use]
+    pub fn download_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.download_path = Some(path.into());
+        self
+    }
+
     /// Convert to `chromiumoxide::BrowserConfig`.
     pub(crate) fn into_chromium_config(self) -> crate::Result<chromiumoxide::BrowserConfig> {
         let mut builder = chromiumoxide::BrowserConfig::builder();
@@ -121,6 +143,10 @@ impl BrowserConfig {
 
         if !self.sandbox {
             builder = builder.arg("--no-sandbox");
+        }
+
+        if self.ignore_https_errors {
+            builder = builder.arg("--ignore-certificate-errors");
         }
 
         // Standard agent-friendly flags

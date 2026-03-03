@@ -77,6 +77,9 @@ pub enum Request {
         /// Number of clicks (default 1, use 2 for double-click).
         #[serde(default = "default_click_count")]
         click_count: u32,
+        /// Delay in ms between mouse-down and mouse-up (0 = instant).
+        #[serde(default)]
+        delay: u64,
     },
     /// Double-click an element.
     DblClick {
@@ -99,6 +102,9 @@ pub enum Request {
         /// Delay between keystrokes in milliseconds (0 = no delay).
         #[serde(default)]
         delay_ms: u64,
+        /// Clear existing content before typing.
+        #[serde(default)]
+        clear: bool,
     },
     /// Press a key combo (e.g. `"Enter"`, `"Control+a"`).
     Press {
@@ -461,6 +467,13 @@ pub enum Request {
         #[serde(default)]
         target: Option<String>,
     },
+    /// Get `innerText` of an element (rendered text, excludes hidden content).
+    GetInnerText {
+        /// Ref or CSS selector.
+        target: String,
+    },
+    /// Get the full page HTML (`document.documentElement.outerHTML`).
+    GetContent,
     /// Get the current page URL.
     GetUrl,
     /// Get the current page title.
@@ -526,7 +539,12 @@ pub enum Request {
     // -- Cookie / Storage ---------------------------------------------------
     /// Get all cookies.
     GetCookies,
-    /// Set a cookie (e.g. `"name=value; path=/"`).
+    /// Set cookies with full attribute control via CDP `Network.setCookies`.
+    SetCookies {
+        /// Array of structured cookie objects.
+        cookies: Vec<brother::CookieInput>,
+    },
+    /// Set a cookie via simple string format (e.g. `"name=value; path=/"`).
     SetCookie {
         /// Cookie string.
         cookie: String,

@@ -35,5 +35,7 @@ mod snapshot;
 pub use browser::Browser;
 pub use config::BrowserConfig;
 pub use error::{Error, Result};
-pub use page::{ConsoleEntry, DialogInfo, JsError, MouseButton, Page, ScrollDirection};
+pub use page::{
+    ConsoleEntry, CookieInput, DialogInfo, JsError, MouseButton, Page, ScrollDirection,
+};
 pub use snapshot::{Ref, RefMap, Snapshot, SnapshotOptions};
