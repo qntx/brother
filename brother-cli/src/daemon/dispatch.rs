@@ -6,7 +6,9 @@ use tokio::sync::Mutex;
 
 use crate::protocol::{Request, Response, ResponseData};
 
-use super::{DaemonState, get_page, handlers, page_display, page_eval, page_ok, page_text};
+use super::handlers;
+use super::macros::{page_display, page_eval, page_ok, page_text};
+use super::state::DaemonState;
 
 #[allow(clippy::cognitive_complexity, clippy::large_stack_frames)]
 pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> Response {
@@ -364,18 +366,18 @@ async fn check_policy(state: &Arc<Mutex<DaemonState>>, req: &Request) -> Option<
     let cache = guard.policy_cache.as_mut()?;
     let cmd_name = request_cmd_name(req);
     let policy = cache.get();
-    match super::policy::check_policy(&cmd_name, policy) {
-        super::policy::PolicyDecision::Allow => None,
-        super::policy::PolicyDecision::Deny => {
-            let category = super::policy::get_category(&cmd_name).unwrap_or("unknown");
+    match crate::policy::check_policy(&cmd_name, policy) {
+        crate::policy::PolicyDecision::Allow => None,
+        crate::policy::PolicyDecision::Deny => {
+            let category = crate::policy::get_category(&cmd_name).unwrap_or("unknown");
             Some(Response::error(format!(
                 "action denied by policy: command '{cmd_name}' (category '{category}') is not allowed"
             )))
         }
-        super::policy::PolicyDecision::Confirm => {
-            let category = super::policy::get_category(&cmd_name).unwrap_or("unknown").to_owned();
+        crate::policy::PolicyDecision::Confirm => {
+            let category = crate::policy::get_category(&cmd_name).unwrap_or("unknown").to_owned();
             let req_json = serde_json::to_value(req).unwrap_or_default();
-            let description = super::policy::describe_action(&cmd_name, &req_json);
+            let description = crate::policy::describe_action(&cmd_name, &req_json);
             let request_json = serde_json::to_string(req).unwrap_or_default();
             let confirmation_id = guard.confirmations.request(
                 cmd_name.clone(),
@@ -411,10 +413,10 @@ async fn cmd_confirm(state: &Arc<Mutex<DaemonState>>, confirmation_id: &str) -> 
         let mut guard = state.lock().await;
         if let Some(cache) = guard.policy_cache.as_mut() {
             let policy = cache.get();
-            if super::policy::check_policy(&entry.cmd_name, policy)
-                == super::policy::PolicyDecision::Deny
+            if crate::policy::check_policy(&entry.cmd_name, policy)
+                == crate::policy::PolicyDecision::Deny
             {
-                let cat = super::policy::get_category(&entry.cmd_name).unwrap_or("unknown");
+                let cat = crate::policy::get_category(&entry.cmd_name).unwrap_or("unknown");
                 return Response::error(format!(
                     "action denied by policy: '{cat}' is no longer allowed"
                 ));

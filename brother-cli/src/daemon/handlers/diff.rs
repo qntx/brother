@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 
 use crate::protocol::{Response, ResponseData};
 
-use super::super::{DaemonState, get_page};
+use crate::daemon::state::{DaemonState, get_page};
 
 /// Compare current snapshot against baseline text.
 pub(in crate::daemon) async fn cmd_diff_snapshot(

@@ -7,7 +7,7 @@ use tokio::sync::Mutex;
 
 use crate::protocol::{Response, ResponseData};
 
-use super::super::{DaemonState, get_page};
+use crate::daemon::state::{DaemonState, get_page};
 
 /// Default tracing categories when none are specified.
 const DEFAULT_TRACE_CATEGORIES: &[&str] = &[
@@ -192,7 +192,7 @@ pub(in crate::daemon) async fn cmd_set_allowed_domains(
     // Inject init script into all existing pages so future navigations
     // within those pages also get the filter.
     if !domains.is_empty() {
-        let script = crate::daemon::domain_filter::build_init_script(&domains);
+        let script = crate::domain_filter::build_init_script(&domains);
         for page in &guard.pages {
             let _ = page.add_init_script(&script).await;
             // Also run it immediately on the current document.

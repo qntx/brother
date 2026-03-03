@@ -5,11 +5,14 @@
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
+mod auth_vault;
 mod client;
 mod commands;
 mod config;
 mod daemon;
+mod domain_filter;
 mod output;
+mod policy;
 mod protocol;
 mod request;
 

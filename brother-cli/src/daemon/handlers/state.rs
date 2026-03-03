@@ -7,7 +7,7 @@ use tokio::sync::Mutex;
 
 use crate::protocol::{Response, ResponseData};
 
-use super::super::{DaemonState, get_page};
+use crate::daemon::state::{DaemonState, get_page};
 
 /// Directory for saved states: `~/.brother/sessions/`.
 fn sessions_dir() -> Option<std::path::PathBuf> {
