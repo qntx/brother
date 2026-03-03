@@ -15,6 +15,7 @@ mod output;
 mod policy;
 mod protocol;
 mod request;
+mod stream_server;
 
 use std::process::ExitCode;
 

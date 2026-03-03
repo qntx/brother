@@ -320,6 +320,10 @@ pub fn build_snapshot(nodes: &[serde_json::Value], options: &SnapshotOptions) ->
     // only when there are duplicates (nth stays None for unique elements).
     disambiguate_refs(&mut ctx.refs);
 
+    // Inject [nth=N] into tree lines for disambiguated refs so AI agents can
+    // distinguish elements with identical role+name in the text output.
+    inject_nth_annotations(&mut ctx.lines, &ctx.refs);
+
     Snapshot::new(ctx.lines.join("\n"), ctx.refs)
 }
 
@@ -542,6 +546,28 @@ fn disambiguate_refs(refs: &mut RefMap) {
     }
 }
 
+/// Inject `[nth=N]` annotations into tree lines for refs with duplicates.
+///
+/// Scans each line for `[ref=eN]` markers and, if the corresponding ref has
+/// an `nth` value, appends `[nth=M]` immediately after the ref tag.
+fn inject_nth_annotations(lines: &mut [String], refs: &RefMap) {
+    for line in lines.iter_mut() {
+        if let Some(start) = line.find("[ref=e") {
+            // Extract the ref id from "[ref=eN]"
+            let after = &line[start + 5..]; // skip "[ref="
+            if let Some(end) = after.find(']') {
+                let ref_id = &after[..end]; // e.g. "e1"
+                if let Some(r) = refs.get(ref_id)
+                    && let Some(nth) = r.nth
+                {
+                    let insert_pos = start + 5 + end + 1; // after "]"
+                    line.insert_str(insert_pos, &format!(" [nth={nth}]"));
+                }
+            }
+        }
+    }
+}
+
 /// Extract a string value from an AX node property.
 ///
 /// CDP returns `{ "role": { "type": "role", "value": "button" } }` —
@@ -683,5 +709,20 @@ mod tests {
         let r3 = snap.get_ref("e3").expect("button");
         assert_eq!(r3.role, "button");
         assert_eq!(r3.nth, None);
+
+        // Tree text must include [nth=N] for duplicates, but not for unique
+        let tree = snap.tree();
+        assert!(
+            tree.contains("[ref=e1] [nth=0]"),
+            "first dup should have [nth=0]"
+        );
+        assert!(
+            tree.contains("[ref=e2] [nth=1]"),
+            "second dup should have [nth=1]"
+        );
+        assert!(
+            !tree.contains("[ref=e3] [nth="),
+            "unique ref should not have [nth]"
+        );
     }
 }

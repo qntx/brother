@@ -144,6 +144,29 @@ pub enum ResponseData {
         /// State names.
         states: Vec<String>,
     },
+    /// Auth profile metadata.
+    AuthProfile {
+        /// Profile name.
+        name: String,
+        /// Login URL.
+        url: String,
+        /// Username.
+        username: String,
+        /// Creation timestamp.
+        created_at: String,
+        /// Last login timestamp.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        last_login_at: Option<String>,
+        /// Whether the profile was updated (vs created).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        updated: Option<bool>,
+    },
+    /// List of auth profiles.
+    AuthList {
+        /// Profile metadata entries.
+        profiles: Vec<serde_json::Value>,
+    },
+
     /// Action requires human confirmation before execution.
     ConfirmationRequired {
         /// Unique confirmation ID (use with `Confirm` / `Deny`).

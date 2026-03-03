@@ -50,26 +50,30 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
         } => {
             dispatch_launch(
                 state,
-                headed,
-                proxy,
-                executable_path,
-                user_data_dir,
-                extra_args,
-                user_agent,
-                ignore_https_errors,
-                download_path,
-                viewport_width,
-                viewport_height,
-                extensions,
-                color_scheme,
-                allowed_domains,
-                allow_file_access,
-                storage_state,
+                LaunchParams {
+                    headed,
+                    proxy,
+                    executable_path,
+                    user_data_dir,
+                    extra_args,
+                    user_agent,
+                    ignore_https_errors,
+                    download_path,
+                    viewport_width,
+                    viewport_height,
+                    extensions,
+                    color_scheme,
+                    allowed_domains,
+                    allow_file_access,
+                    storage_state,
+                },
             )
             .await
         }
         Request::Connect { target } => handlers::cmd_connect(state, &target).await,
-        Request::Navigate { url, wait, headers } => handlers::cmd_navigate(state, &url, wait, headers).await,
+        Request::Navigate { url, wait, headers } => {
+            handlers::cmd_navigate(state, &url, wait, headers).await
+        }
         Request::Back => page_ok!(state, go_back()),
         Request::Forward => page_ok!(state, go_forward()),
         Request::Reload => page_ok!(state, reload()),
@@ -81,7 +85,15 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
             quality,
             annotate,
         } => {
-            handlers::cmd_screenshot(state, full_page, selector.as_deref(), &format, quality, annotate).await
+            handlers::cmd_screenshot(
+                state,
+                full_page,
+                selector.as_deref(),
+                &format,
+                quality,
+                annotate,
+            )
+            .await
         }
         Request::Eval { expression } => page_eval!(state, eval(&expression)),
         Request::Click {
@@ -352,6 +364,73 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
         Request::SetAllowedDomains { domains } => {
             handlers::cmd_set_allowed_domains(state, domains).await
         }
+        Request::InputMouse {
+            event_type,
+            x,
+            y,
+            button,
+            click_count,
+            delta_x,
+            delta_y,
+            modifiers,
+        } => page_ok!(
+            state,
+            inject_mouse_event(brother::RawMouseEvent {
+                event_type: &event_type,
+                x,
+                y,
+                button: button.as_deref(),
+                click_count,
+                delta_x,
+                delta_y,
+                modifiers,
+            })
+        ),
+        Request::InputKeyboard {
+            event_type,
+            key,
+            code,
+            text,
+            modifiers,
+        } => page_ok!(
+            state,
+            inject_key_event(
+                &event_type,
+                key.as_deref(),
+                code.as_deref(),
+                text.as_deref(),
+                modifiers,
+            )
+        ),
+        Request::InputTouch {
+            event_type,
+            touch_points,
+            modifiers,
+        } => page_ok!(
+            state,
+            inject_touch_event(&event_type, &touch_points, modifiers)
+        ),
+        Request::AuthSave {
+            name,
+            url,
+            username,
+            password,
+            username_selector,
+            password_selector,
+            submit_selector,
+        } => handlers::cmd_auth_save(
+            &name,
+            &url,
+            &username,
+            &password,
+            username_selector.as_deref(),
+            password_selector.as_deref(),
+            submit_selector.as_deref(),
+        ),
+        Request::AuthLogin { name } => handlers::cmd_auth_login(state, &name).await,
+        Request::AuthList => handlers::cmd_auth_list(),
+        Request::AuthDelete { name } => handlers::cmd_auth_delete(&name),
+        Request::AuthShow { name } => handlers::cmd_auth_show(&name),
         Request::Confirm { .. } | Request::Deny { .. } => {
             Response::error("confirm/deny handled at dispatch level")
         }
@@ -374,7 +453,9 @@ async fn check_policy(state: &Arc<Mutex<DaemonState>>, req: &Request) -> Option<
             )))
         }
         crate::policy::PolicyDecision::Confirm => {
-            let category = crate::policy::get_category(&cmd_name).unwrap_or("unknown").to_owned();
+            let category = crate::policy::get_category(&cmd_name)
+                .unwrap_or("unknown")
+                .to_owned();
             let req_json = serde_json::to_value(req).unwrap_or_default();
             let description = crate::policy::describe_action(&cmd_name, &req_json);
             let request_json = serde_json::to_string(req).unwrap_or_default();
@@ -432,9 +513,7 @@ async fn cmd_deny(state: &Arc<Mutex<DaemonState>>, confirmation_id: &str) -> Res
     Response::ok()
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn dispatch_launch(
-    state: &Arc<Mutex<DaemonState>>,
+struct LaunchParams {
     headed: bool,
     proxy: Option<String>,
     executable_path: Option<String>,
@@ -450,41 +529,43 @@ async fn dispatch_launch(
     allowed_domains: Vec<String>,
     allow_file_access: bool,
     storage_state: Option<String>,
-) -> Response {
+}
+
+async fn dispatch_launch(state: &Arc<Mutex<DaemonState>>, p: LaunchParams) -> Response {
     let mut guard = state.lock().await;
     if guard.browser.is_some() {
         return Response::ok();
     }
     let mut config = brother::BrowserConfig::default()
-        .headless(!headed)
-        .ignore_https_errors(ignore_https_errors)
-        .viewport(viewport_width, viewport_height);
-    if let Some(p) = proxy {
-        config = config.proxy(p);
+        .headless(!p.headed)
+        .ignore_https_errors(p.ignore_https_errors)
+        .viewport(p.viewport_width, p.viewport_height);
+    if let Some(proxy) = p.proxy {
+        config = config.proxy(proxy);
     }
-    if let Some(ep) = executable_path {
+    if let Some(ep) = p.executable_path {
         config = config.executable(ep);
     }
-    if let Some(ud) = user_data_dir {
+    if let Some(ud) = p.user_data_dir {
         config = config.user_data_dir(ud);
     }
-    if let Some(ua) = user_agent {
+    if let Some(ua) = p.user_agent {
         config = config.user_agent(ua);
     }
-    if let Some(dp) = download_path {
+    if let Some(dp) = p.download_path {
         config = config.download_path(dp);
     }
-    for ext in &extensions {
+    for ext in &p.extensions {
         config.args.push(format!("--load-extension={ext}"));
     }
-    if allow_file_access {
+    if p.allow_file_access {
         config.args.push("--allow-file-access-from-files".into());
     }
-    config.args.extend(extra_args);
-    guard.pending_color_scheme = color_scheme;
-    guard.pending_storage_state = storage_state;
-    if !allowed_domains.is_empty() {
-        guard.allowed_domains = allowed_domains;
+    config.args.extend(p.extra_args);
+    guard.pending_color_scheme = p.color_scheme;
+    guard.pending_storage_state = p.storage_state;
+    if !p.allowed_domains.is_empty() {
+        guard.allowed_domains = p.allowed_domains;
     }
     guard.launch_config = Some(config);
     Response::ok()

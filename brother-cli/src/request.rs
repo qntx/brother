@@ -3,8 +3,8 @@
 use brother::{MouseButton, ScrollDirection};
 
 use crate::commands::{
-    ClipboardSub, Command, CookieSub, DialogSub, DiffSub, HarSub, MouseSub, ProfilerSub,
-    ScreencastSub, StateSub, StorageSub, TabSub, TraceSub,
+    AuthSub, ClipboardSub, Command, CookieSub, DialogSub, DiffSub, HarSub, InputSub, MouseSub,
+    ProfilerSub, ScreencastSub, StateSub, StorageSub, TabSub, TraceSub,
 };
 use crate::protocol::{Request, RouteAction, WaitCondition, WaitStrategy};
 
@@ -388,6 +388,72 @@ pub fn build_request(cmd: Command) -> Request {
         Command::DenyAction { id } => Request::Deny {
             confirmation_id: id,
         },
+        Command::Input(sub) => match sub {
+            InputSub::Mouse {
+                event_type,
+                x,
+                y,
+                button,
+                click_count,
+                delta_x,
+                delta_y,
+                modifiers,
+            } => Request::InputMouse {
+                event_type,
+                x,
+                y,
+                button,
+                click_count,
+                delta_x,
+                delta_y,
+                modifiers,
+            },
+            InputSub::Keyboard {
+                event_type,
+                key,
+                code,
+                text,
+                modifiers,
+            } => Request::InputKeyboard {
+                event_type,
+                key,
+                code,
+                text,
+                modifiers,
+            },
+            InputSub::Touch {
+                event_type,
+                points,
+                modifiers,
+            } => Request::InputTouch {
+                event_type,
+                touch_points: parse_touch_points(points.as_deref()),
+                modifiers,
+            },
+        },
+        Command::Auth(sub) => match sub {
+            AuthSub::Save {
+                name,
+                url,
+                username,
+                password,
+                username_selector,
+                password_selector,
+                submit_selector,
+            } => Request::AuthSave {
+                name,
+                url,
+                username,
+                password,
+                username_selector,
+                password_selector,
+                submit_selector,
+            },
+            AuthSub::Login { name } => Request::AuthLogin { name },
+            AuthSub::List => Request::AuthList,
+            AuthSub::Delete { name } => Request::AuthDelete { name },
+            AuthSub::Show { name } => Request::AuthShow { name },
+        },
         Command::Status | Command::Daemon => Request::Status,
         Command::Close => Request::Close,
     }
@@ -503,6 +569,13 @@ fn parse_header_list(headers: &[String]) -> std::collections::HashMap<String, St
             Some((key.trim().to_owned(), value.trim().to_owned()))
         })
         .collect()
+}
+
+fn parse_touch_points(input: Option<&str>) -> Vec<(f64, f64)> {
+    let Some(s) = input else {
+        return Vec::new();
+    };
+    serde_json::from_str(s).unwrap_or_default()
 }
 
 fn normalize_url(url: &str) -> String {

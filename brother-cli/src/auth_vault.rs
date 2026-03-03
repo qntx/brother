@@ -4,7 +4,6 @@
 //! `~/.brother/auth/`. The encryption key is derived from the
 //! `BROTHER_ENCRYPTION_KEY` environment variable or auto-generated
 //! and stored in `~/.brother/auth/.key`.
-#![allow(dead_code)]
 
 use std::fs;
 use std::path::PathBuf;

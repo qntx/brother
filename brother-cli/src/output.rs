@@ -196,7 +196,10 @@ fn print_plain(data: Option<&ResponseData>, screenshot: Option<&ScreenshotOutput
             if let Some(arr) = annotations.as_array() {
                 println!("annotations: {} elements", arr.len());
                 for a in arr {
-                    let num = a.get("number").and_then(serde_json::Value::as_u64).unwrap_or(0);
+                    let num = a
+                        .get("number")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0);
                     let role = a.get("role").and_then(|v| v.as_str()).unwrap_or("");
                     let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
                     print!("  @e{num} [{role}]");
@@ -204,6 +207,38 @@ fn print_plain(data: Option<&ResponseData>, screenshot: Option<&ScreenshotOutput
                         print!(" \"{name}\"");
                     }
                     println!();
+                }
+            }
+        }
+        Some(ResponseData::AuthProfile {
+            name,
+            url,
+            username,
+            created_at,
+            last_login_at,
+            updated,
+        }) => {
+            if let Some(true) = updated {
+                println!("updated: {name}");
+            } else if updated.is_some() {
+                println!("created: {name}");
+            }
+            println!("  url: {url}");
+            println!("  username: {username}");
+            println!("  created: {created_at}");
+            if let Some(last) = last_login_at {
+                println!("  last login: {last}");
+            }
+        }
+        Some(ResponseData::AuthList { profiles }) => {
+            if profiles.is_empty() {
+                println!("(no auth profiles)");
+            } else {
+                for p in profiles {
+                    let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                    let url = p.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                    let user = p.get("username").and_then(|v| v.as_str()).unwrap_or("");
+                    println!("  {name}  {user}  {url}");
                 }
             }
         }

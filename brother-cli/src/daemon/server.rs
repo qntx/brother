@@ -54,16 +54,14 @@ pub async fn run_session(
         allowed_domains: Vec::new(),
         pending_color_scheme: None,
         pending_storage_state: None,
-        policy_cache: policy_file.and_then(|path| {
-            match crate::policy::load_policy_file(path) {
-                Ok(p) => {
-                    tracing::info!(path, "loaded action policy");
-                    Some(crate::policy::PolicyCache::new(path.to_owned(), p))
-                }
-                Err(e) => {
-                    tracing::warn!(path, %e, "failed to load policy file");
-                    None
-                }
+        policy_cache: policy_file.and_then(|path| match crate::policy::load_policy_file(path) {
+            Ok(p) => {
+                tracing::info!(path, "loaded action policy");
+                Some(crate::policy::PolicyCache::new(path.to_owned(), p))
+            }
+            Err(e) => {
+                tracing::warn!(path, %e, "failed to load policy file");
+                None
             }
         }),
         confirmations: crate::policy::ConfirmationQueue::new(),

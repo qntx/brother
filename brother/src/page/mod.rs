@@ -9,6 +9,7 @@ mod dom;
 mod emulation;
 mod find;
 mod interaction;
+pub use interaction::RawMouseEvent;
 mod navigation;
 mod query;
 mod screenshot;

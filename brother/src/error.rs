@@ -147,7 +147,9 @@ impl Error {
         }
 
         // Multiple elements matched (ambiguous selector)
-        if lower.contains("strict mode violation") || lower.contains("resolved to") && lower.contains("elements") {
+        if lower.contains("strict mode violation")
+            || lower.contains("resolved to") && lower.contains("elements")
+        {
             return Self::InvalidArgument(format!(
                 "Selector \"{target}\" matched multiple elements. \
                  Use a more specific selector or run 'snapshot' to find the exact ref."

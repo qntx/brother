@@ -145,10 +145,7 @@ pub(in crate::daemon) async fn cmd_nth(
     }
 }
 
-pub(in crate::daemon) async fn cmd_expose(
-    state: &Arc<Mutex<DaemonState>>,
-    name: &str,
-) -> Response {
+pub(in crate::daemon) async fn cmd_expose(state: &Arc<Mutex<DaemonState>>, name: &str) -> Response {
     let page = match get_page(state).await {
         Ok(p) => p,
         Err(r) => return r,

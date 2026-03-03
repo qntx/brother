@@ -217,7 +217,10 @@ pub fn describe_action(cmd: &str, req_json: &serde_json::Value) -> String {
             format!("evaluate JS: {truncated}")
         }
         "click" | "dbl_click" => {
-            let target = req_json.get("target").and_then(|v| v.as_str()).unwrap_or("?");
+            let target = req_json
+                .get("target")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             format!("{cmd} on {target}")
         }
         "fill" | "type" => {
@@ -228,7 +231,10 @@ pub fn describe_action(cmd: &str, req_json: &serde_json::Value) -> String {
             format!("{cmd} into {target}")
         }
         "download" | "upload" => {
-            let target = req_json.get("target").and_then(|v| v.as_str()).unwrap_or("?");
+            let target = req_json
+                .get("target")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             format!("{cmd} via {target}")
         }
         _ => {
@@ -263,7 +269,13 @@ impl ConfirmationQueue {
     }
 
     /// Insert a new pending confirmation. Returns the generated ID.
-    pub fn request(&mut self, cmd_name: String, category: String, description: String, request_json: String) -> String {
+    pub fn request(
+        &mut self,
+        cmd_name: String,
+        category: String,
+        description: String,
+        request_json: String,
+    ) -> String {
         self.gc();
         let id = format!("c_{:016x}", rand::random::<u64>());
         self.pending.insert(
@@ -342,7 +354,12 @@ impl PolicyCache {
 mod tests {
     use super::*;
 
-    fn policy(default: &str, allow: Vec<&str>, deny: Vec<&str>, confirm: Vec<&str>) -> ActionPolicy {
+    fn policy(
+        default: &str,
+        allow: Vec<&str>,
+        deny: Vec<&str>,
+        confirm: Vec<&str>,
+    ) -> ActionPolicy {
         ActionPolicy {
             default: default.to_owned(),
             allow: allow.into_iter().map(String::from).collect(),

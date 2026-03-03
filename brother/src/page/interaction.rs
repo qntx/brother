@@ -4,11 +4,33 @@ use std::time::Duration;
 
 use chromiumoxide::cdp::browser_protocol::input::{
     DispatchKeyEventParams, DispatchKeyEventType, DispatchMouseEventParams, DispatchMouseEventType,
+    MouseButton as CdpMouseButton,
 };
 
 use crate::error::{Error, Result};
 
 use super::{MouseButton, Page, ScrollDirection};
+
+/// Raw CDP mouse event for injection (pair browsing / stream server).
+#[derive(Debug)]
+pub struct RawMouseEvent<'a> {
+    /// Event type: `"mousePressed"`, `"mouseReleased"`, `"mouseMoved"`, `"mouseWheel"`.
+    pub event_type: &'a str,
+    /// X coordinate.
+    pub x: f64,
+    /// Y coordinate.
+    pub y: f64,
+    /// Button: `"left"`, `"right"`, `"middle"`, `"none"`.
+    pub button: Option<&'a str>,
+    /// Click count.
+    pub click_count: Option<i64>,
+    /// Wheel delta X.
+    pub delta_x: Option<f64>,
+    /// Wheel delta Y.
+    pub delta_y: Option<f64>,
+    /// Modifier flags (1=Alt, 2=Ctrl, 4=Meta, 8=Shift).
+    pub modifiers: Option<i64>,
+}
 
 impl Page {
     /// Click an element by ref or CSS selector.
@@ -332,6 +354,123 @@ impl Page {
         self.inner.execute(start).await.map_err(Error::Cdp)?;
         let end = DispatchTouchEventParams::new(DispatchTouchEventType::TouchEnd, vec![]);
         self.inner.execute(end).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Inject a raw CDP mouse event (for stream server / pair browsing).
+    pub async fn inject_mouse_event(&self, ev: RawMouseEvent<'_>) -> Result<()> {
+        let cdp_type = match ev.event_type {
+            "mousePressed" => DispatchMouseEventType::MousePressed,
+            "mouseReleased" => DispatchMouseEventType::MouseReleased,
+            "mouseMoved" => DispatchMouseEventType::MouseMoved,
+            "mouseWheel" => DispatchMouseEventType::MouseWheel,
+            other => {
+                return Err(Error::Snapshot(format!(
+                    "unknown mouse event type: {other}"
+                )));
+            }
+        };
+        let cdp_button = match ev.button.unwrap_or("none") {
+            "left" => CdpMouseButton::Left,
+            "right" => CdpMouseButton::Right,
+            "middle" => CdpMouseButton::Middle,
+            _ => CdpMouseButton::None,
+        };
+        let mut builder = DispatchMouseEventParams::builder()
+            .r#type(cdp_type)
+            .x(ev.x)
+            .y(ev.y)
+            .button(cdp_button);
+        if let Some(cc) = ev.click_count {
+            builder = builder.click_count(cc);
+        }
+        if let Some(dx) = ev.delta_x {
+            builder = builder.delta_x(dx);
+        }
+        if let Some(dy) = ev.delta_y {
+            builder = builder.delta_y(dy);
+        }
+        if let Some(m) = ev.modifiers {
+            builder = builder.modifiers(m);
+        }
+        let params = builder
+            .build()
+            .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?;
+        self.inner.execute(params).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Inject a raw CDP keyboard event (for stream server / pair browsing).
+    ///
+    /// `event_type`: `"keyDown"`, `"keyUp"`, `"char"`.
+    pub async fn inject_key_event(
+        &self,
+        event_type: &str,
+        key: Option<&str>,
+        code: Option<&str>,
+        text: Option<&str>,
+        modifiers: Option<i64>,
+    ) -> Result<()> {
+        let cdp_type = match event_type {
+            "keyDown" => DispatchKeyEventType::KeyDown,
+            "keyUp" => DispatchKeyEventType::KeyUp,
+            "char" => DispatchKeyEventType::Char,
+            other => {
+                return Err(Error::Snapshot(format!("unknown key event type: {other}")));
+            }
+        };
+        let mut builder = DispatchKeyEventParams::builder().r#type(cdp_type);
+        if let Some(k) = key {
+            builder = builder.key(k);
+        }
+        if let Some(c) = code {
+            builder = builder.code(c);
+        }
+        if let Some(t) = text {
+            builder = builder.text(t);
+        }
+        if let Some(m) = modifiers {
+            builder = builder.modifiers(m);
+        }
+        let params = builder
+            .build()
+            .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?;
+        self.inner.execute(params).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Inject a raw CDP touch event (for stream server / pair browsing).
+    ///
+    /// `event_type`: `"touchStart"`, `"touchEnd"`, `"touchMove"`, `"touchCancel"`.
+    pub async fn inject_touch_event(
+        &self,
+        event_type: &str,
+        touch_points: &[(f64, f64)],
+        modifiers: Option<i64>,
+    ) -> Result<()> {
+        use chromiumoxide::cdp::browser_protocol::input::{
+            DispatchTouchEventParams, DispatchTouchEventType, TouchPoint,
+        };
+        let cdp_type = match event_type {
+            "touchStart" => DispatchTouchEventType::TouchStart,
+            "touchEnd" => DispatchTouchEventType::TouchEnd,
+            "touchMove" => DispatchTouchEventType::TouchMove,
+            "touchCancel" => DispatchTouchEventType::TouchCancel,
+            other => {
+                return Err(Error::Snapshot(format!(
+                    "unknown touch event type: {other}"
+                )));
+            }
+        };
+        let points: Vec<TouchPoint> = touch_points
+            .iter()
+            .map(|&(x, y)| TouchPoint::new(x, y))
+            .collect();
+        let mut params = DispatchTouchEventParams::new(cdp_type, points);
+        if let Some(m) = modifiers {
+            params.modifiers = Some(m);
+        }
+        self.inner.execute(params).await.map_err(Error::Cdp)?;
         Ok(())
     }
 

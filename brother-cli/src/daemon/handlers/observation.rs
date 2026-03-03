@@ -127,7 +127,8 @@ pub(in crate::daemon) async fn cmd_screenshot(
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
         if let Ok((x, y, w, h)) = page.bounding_box(&format!("@{ref_id}")).await
-            && w > 0.0 && h > 0.0
+            && w > 0.0
+            && h > 0.0
         {
             annotations.push(serde_json::json!({
                 "ref": ref_id,

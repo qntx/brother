@@ -28,10 +28,7 @@ pub(in crate::daemon) fn cmd_device_list() -> Response {
     })
 }
 
-pub(in crate::daemon) async fn cmd_device(
-    state: &Arc<Mutex<DaemonState>>,
-    name: &str,
-) -> Response {
+pub(in crate::daemon) async fn cmd_device(state: &Arc<Mutex<DaemonState>>, name: &str) -> Response {
     let Some(preset) = brother::DevicePreset::lookup(name) else {
         let names = brother::DevicePreset::list_names().join(", ");
         return Response::error(format!("unknown device '{name}'. Available: {names}"));

@@ -11,6 +11,7 @@
 //! - [`state`]: State persistence (save/load/list/clear/show/clean/rename).
 //! - [`trace`]: CDP tracing, profiler, domain filter.
 
+mod auth;
 mod diff;
 mod emulation;
 mod interaction;
@@ -21,8 +22,13 @@ mod state;
 mod tabs;
 mod trace;
 
+pub(super) use auth::{
+    cmd_auth_delete, cmd_auth_list, cmd_auth_login, cmd_auth_save, cmd_auth_show,
+};
 pub(super) use diff::{cmd_diff_screenshot, cmd_diff_snapshot, cmd_diff_url};
-pub(super) use emulation::{cmd_device, cmd_device_list, cmd_screencast_start, cmd_screencast_stop};
+pub(super) use emulation::{
+    cmd_device, cmd_device_list, cmd_screencast_start, cmd_screencast_stop,
+};
 pub(super) use interaction::{
     cmd_click, cmd_expose, cmd_extra_headers, cmd_find, cmd_nth, cmd_type,
 };

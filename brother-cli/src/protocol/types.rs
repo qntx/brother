@@ -133,4 +133,3 @@ pub fn default_screencast_format() -> String {
 pub const fn default_screencast_quality() -> u32 {
     80
 }
-
