@@ -49,6 +49,10 @@ struct Cli {
     #[arg(long, global = true)]
     user_data_dir: Option<String>,
 
+    /// Named browser profile (shorthand for --user-data-dir ~/.brother/profiles/<name>).
+    #[arg(long, global = true)]
+    profile: Option<String>,
+
     /// Additional Chrome launch arguments.
     #[arg(long = "arg", global = true)]
     extra_args: Vec<String>,
@@ -150,10 +154,17 @@ fn build_launch(cli: &Cli, cfg: &config::Config) -> Option<protocol::Request> {
         .executable_path
         .clone()
         .or_else(|| cfg.executable_path.clone());
+    // --profile <name> resolves to ~/.brother/profiles/<name>
+    let profile_dir = cli
+        .profile
+        .clone()
+        .or_else(|| cfg.profile.clone())
+        .map(|name| resolve_profile_dir(&name));
     let user_data_dir = cli
         .user_data_dir
         .clone()
-        .or_else(|| cfg.user_data_dir.clone());
+        .or_else(|| cfg.user_data_dir.clone())
+        .or(profile_dir);
     let user_agent = cli
         .launch_user_agent
         .clone()
@@ -204,4 +215,14 @@ fn build_launch(cli: &Cli, cfg: &config::Config) -> Option<protocol::Request> {
         allow_file_access: false,
         storage_state: None,
     })
+}
+
+/// Resolve a named profile to its user data directory path.
+fn resolve_profile_dir(name: &str) -> String {
+    let base = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".brother")
+        .join("profiles")
+        .join(name);
+    base.to_string_lossy().into_owned()
 }

@@ -32,6 +32,8 @@ pub struct Config {
     pub download_path: Option<String>,
     /// Named session for daemon isolation.
     pub session: Option<String>,
+    /// Named browser profile (shorthand for `user_data_dir`).
+    pub profile: Option<String>,
     /// Auto-discover and connect to a running Chrome instance.
     pub auto_connect: Option<bool>,
     /// Path to action policy JSON file.
@@ -97,6 +99,9 @@ fn apply_env(config: &mut Config) {
     }
     if let Ok(val) = std::env::var("BROTHER_SESSION") {
         config.session = Some(val);
+    }
+    if let Ok(val) = std::env::var("BROTHER_PROFILE") {
+        config.profile = Some(val);
     }
     if let Ok(val) = std::env::var("BROTHER_AUTO_CONNECT") {
         config.auto_connect = Some(is_truthy(&val));
