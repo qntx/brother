@@ -66,6 +66,8 @@ pub async fn run_session(
         }),
         confirmations: crate::policy::ConfirmationQueue::new(),
         har_entries: None,
+        scoped_headers: std::collections::HashMap::new(),
+        scoped_headers_cancel: None,
     }));
 
     // Idle watcher

@@ -524,3 +524,224 @@ pub(in crate::daemon) async fn cmd_har_stop(
         Response::ok_data(ResponseData::Eval { value: har })
     }
 }
+
+/// Set scoped HTTP headers for a specific origin.
+/// Uses CDP Fetch domain to intercept and inject headers for matching requests.
+pub(in crate::daemon) async fn cmd_scoped_headers(
+    state: &Arc<Mutex<DaemonState>>,
+    origin: String,
+    headers: std::collections::HashMap<String, String>,
+) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let url_pattern = origin_to_url_pattern(&origin);
+    let header_count = headers.len();
+
+    {
+        let mut guard = state.lock().await;
+        guard.scoped_headers.insert(url_pattern.clone(), headers);
+    }
+
+    if let Err(e) = restart_fetch_interception(state, &page).await {
+        return Response::error(format!("failed to enable fetch interception: {e}"));
+    }
+
+    Response::ok_data(ResponseData::Text {
+        text: format!("scoped {header_count} header(s) for \"{origin}\""),
+    })
+}
+
+/// Clear scoped headers for a specific origin, or all if origin is `None`.
+pub(in crate::daemon) async fn cmd_clear_scoped_headers(
+    state: &Arc<Mutex<DaemonState>>,
+    origin: Option<&str>,
+) -> Response {
+    let page = match get_page(state).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    let removed = {
+        let mut guard = state.lock().await;
+        if let Some(o) = origin {
+            let pattern = origin_to_url_pattern(o);
+            guard.scoped_headers.remove(&pattern).is_some()
+        } else {
+            let had = !guard.scoped_headers.is_empty();
+            guard.scoped_headers.clear();
+            had
+        }
+    };
+
+    if !removed {
+        return Response::ok_data(ResponseData::Text {
+            text: "no scoped headers to clear".into(),
+        });
+    }
+
+    let is_empty = state.lock().await.scoped_headers.is_empty();
+    if is_empty {
+        // Disable Fetch interception entirely
+        stop_fetch_interception(state).await;
+        let _ = page
+            .inner()
+            .execute(
+                chromiumoxide::cdp::browser_protocol::fetch::DisableParams::default(),
+            )
+            .await;
+    } else if let Err(e) = restart_fetch_interception(state, &page).await {
+        return Response::error(format!("failed to update fetch interception: {e}"));
+    }
+
+    let msg = origin.map_or_else(
+        || "cleared all scoped headers".into(),
+        |o| format!("cleared scoped headers for \"{o}\""),
+    );
+    Response::ok_data(ResponseData::Text { text: msg })
+}
+
+/// Convert an origin string to a URL pattern for CDP Fetch `RequestPattern`.
+fn origin_to_url_pattern(origin: &str) -> String {
+    let raw = if origin.contains("://") {
+        origin.to_string()
+    } else {
+        format!("https://{origin}")
+    };
+    url::Url::parse(&raw).map_or_else(
+        |_| format!("*://{origin}/*"),
+        |url| format!("*://{host}/*", host = url.host_str().unwrap_or(origin)),
+    )
+}
+
+/// Stop the current Fetch listener task (if any).
+async fn stop_fetch_interception(state: &Arc<Mutex<DaemonState>>) {
+    let cancel_tx = state.lock().await.scoped_headers_cancel.take();
+    if let Some(tx) = cancel_tx {
+        let _ = tx.send(true);
+    }
+}
+
+/// (Re-)enable CDP Fetch interception with current scoped headers.
+async fn restart_fetch_interception(
+    state: &Arc<Mutex<DaemonState>>,
+    page: &brother::Page,
+) -> Result<(), String> {
+    use chromiumoxide::cdp::browser_protocol::fetch::{
+        ContinueRequestParams, EnableParams, HeaderEntry, RequestPattern,
+    };
+    use futures::StreamExt;
+
+    // Cancel previous listener
+    stop_fetch_interception(state).await;
+
+    let patterns: Vec<RequestPattern> = {
+        let guard = state.lock().await;
+        guard
+            .scoped_headers
+            .keys()
+            .map(|p| RequestPattern::builder().url_pattern(p.clone()).build())
+            .collect()
+    };
+
+    if patterns.is_empty() {
+        return Ok(());
+    }
+
+    // Enable Fetch domain with our patterns
+    let enable = EnableParams::builder().patterns(patterns).build();
+    page.inner()
+        .execute(enable)
+        .await
+        .map_err(|e| format!("Fetch.enable: {e}"))?;
+
+    // Set up event listener
+    let mut events = page
+        .inner()
+        .event_listener::<chromiumoxide::cdp::browser_protocol::fetch::EventRequestPaused>()
+        .await
+        .map_err(|e| format!("event_listener: {e}"))?;
+
+    let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
+    state.lock().await.scoped_headers_cancel = Some(cancel_tx);
+
+    let state_clone = Arc::clone(state);
+    let page_clone = page.inner().clone();
+
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                Some(event) = events.next() => {
+                    let request_url = event.request.url.clone();
+                    let merged = {
+                        let guard = state_clone.lock().await;
+                        merge_headers_for_url(&guard.scoped_headers, &request_url)
+                    };
+
+                    // Build header list: original request headers + scoped overrides
+                    // Headers is a newtype around serde_json::Map; serialize to access entries
+                    let headers_map: serde_json::Map<String, serde_json::Value> =
+                        serde_json::from_value(serde_json::to_value(&event.request.headers).unwrap_or_default())
+                            .unwrap_or_default();
+                    let mut header_entries: Vec<HeaderEntry> = headers_map
+                        .iter()
+                        .map(|(k, v)| {
+                            HeaderEntry::new(
+                                k.clone(),
+                                v.as_str().unwrap_or_default().to_owned(),
+                            )
+                        })
+                        .collect();
+
+                    // Override/add scoped headers
+                    for (name, value) in &merged {
+                        if let Some(existing) = header_entries.iter_mut().find(|h| {
+                            h.name.eq_ignore_ascii_case(name)
+                        }) {
+                            existing.value.clone_from(value);
+                        } else {
+                            header_entries.push(HeaderEntry::new(
+                                name.clone(),
+                                value.clone(),
+                            ));
+                        }
+                    }
+
+                    let mut params = ContinueRequestParams::new(event.request_id.clone());
+                    params.headers = Some(header_entries);
+                    let _ = page_clone.execute(params).await;
+                }
+                _ = cancel_rx.changed() => {
+                    break;
+                }
+            }
+        }
+    });
+
+    Ok(())
+}
+
+/// Find all scoped headers that apply to a given request URL.
+fn merge_headers_for_url(
+    scoped: &std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+    url: &str,
+) -> std::collections::HashMap<String, String> {
+    let mut merged = std::collections::HashMap::new();
+    let host = url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(String::from));
+    for (pattern, headers) in scoped {
+        // Extract host from pattern like "*://api.example.com/*"
+        let pattern_host = pattern
+            .strip_prefix("*://")
+            .and_then(|s| s.strip_suffix("/*"));
+        if let (Some(ph), Some(h)) = (pattern_host, &host)
+            && (h == ph || h.ends_with(&format!(".{ph}")))
+        {
+            merged.extend(headers.iter().map(|(k, v)| (k.clone(), v.clone())));
+        }
+    }
+    merged
+}

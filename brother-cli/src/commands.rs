@@ -525,6 +525,19 @@ pub enum Command {
         #[arg(short, long, default_value = "text/plain")]
         content_type: String,
     },
+    /// Set scoped HTTP headers for a specific origin (injected via CDP Fetch).
+    ScopedHeaders {
+        /// Origin or hostname (e.g. `api.example.com`).
+        origin: String,
+        /// Headers as repeatable `-H key:value` pairs.
+        #[arg(short = 'H', long = "header", required = true)]
+        headers: Vec<String>,
+    },
+    /// Clear scoped headers for a specific origin, or all if omitted.
+    ClearScopedHeaders {
+        /// Origin to clear. Omit to clear all.
+        origin: Option<String>,
+    },
     /// Remove a network route. Use `*` to remove all.
     Unroute {
         /// URL pattern to remove, or `*` for all.

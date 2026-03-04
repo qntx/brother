@@ -248,6 +248,11 @@ pub fn build_request(cmd: Command) -> Request {
             body,
             content_type,
         },
+        Command::ScopedHeaders { origin, headers } => Request::ScopedHeaders {
+            origin,
+            headers: parse_header_list(&headers),
+        },
+        Command::ClearScopedHeaders { origin } => Request::ClearScopedHeaders { origin },
         Command::Unroute { pattern } => Request::Unroute { pattern },
         Command::Requests { action, filter } => Request::Requests { action, filter },
         Command::Dialog(sub) => match sub {

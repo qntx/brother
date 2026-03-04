@@ -29,6 +29,7 @@ png = { workspace = true }
 aes-gcm = { workspace = true }
 rand = { workspace = true }
 tokio-tungstenite = { workspace = true }
+url = { workspace = true }
 
 [lints]
 workspace = true

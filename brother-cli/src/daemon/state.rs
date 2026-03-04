@@ -40,6 +40,11 @@ pub struct DaemonState {
     pub confirmations: crate::policy::ConfirmationQueue,
     /// HAR recording: captured entries while recording is active.
     pub har_entries: Option<Vec<serde_json::Value>>,
+    /// Scoped headers: origin pattern → headers map.
+    /// Used by CDP Fetch domain to inject per-domain headers.
+    pub scoped_headers: std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+    /// Handle to cancel the scoped-headers Fetch listener task.
+    pub scoped_headers_cancel: Option<tokio::sync::watch::Sender<bool>>,
 }
 
 pub async fn ensure_browser(state: &Arc<Mutex<DaemonState>>) -> Result<(), Response> {

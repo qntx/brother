@@ -156,6 +156,12 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
             body,
             content_type,
         } => handlers::cmd_route(state, pattern, action, status, body, content_type).await,
+        Request::ScopedHeaders { origin, headers } => {
+            handlers::cmd_scoped_headers(state, origin, headers).await
+        }
+        Request::ClearScopedHeaders { origin } => {
+            handlers::cmd_clear_scoped_headers(state, origin.as_deref()).await
+        }
         Request::Unroute { pattern } => handlers::cmd_unroute(state, &pattern).await,
         Request::Requests { action, filter } => {
             handlers::cmd_requests(state, action.as_deref(), filter.as_deref()).await

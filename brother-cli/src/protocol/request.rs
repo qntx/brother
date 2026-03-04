@@ -925,6 +925,21 @@ pub enum Request {
         modifiers: Option<i64>,
     },
 
+    /// Set scoped HTTP headers for a specific origin (domain).
+    /// Headers are injected via CDP Fetch interception for matching requests only.
+    ScopedHeaders {
+        /// Origin or hostname to scope the headers to (e.g. `api.example.com`).
+        origin: String,
+        /// Headers to inject for requests matching this origin.
+        headers: std::collections::HashMap<String, String>,
+    },
+    /// Clear scoped headers for a specific origin, or all if origin is omitted.
+    ClearScopedHeaders {
+        /// Origin to clear headers for. If omitted, clears all scoped headers.
+        #[serde(default)]
+        origin: Option<String>,
+    },
+
     /// Save or update an encrypted auth profile.
     AuthSave {
         /// Profile name (alphanumeric + hyphens/underscores).
