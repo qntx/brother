@@ -66,20 +66,6 @@ brother text https://example.com -s "h1"
 brother --json snapshot https://example.com
 ```
 
-## Architecture
-
-```text
-┌──────────────────────────────────────────┐
-│         brother (Rust library)           │
-│  Snapshot+Refs · Actions · Config        │
-├──────────────────────────────────────────┤
-│       chromiumoxide (CDP layer)          │
-│  WebSocket · 600+ CDP types · Events     │
-├──────────────────────────────────────────┤
-│        Chrome / Chromium (CDP)           │
-└──────────────────────────────────────────┘
-```
-
 ## Requirements
 
 - Rust 1.85+
@@ -95,3 +81,16 @@ Licensed under either of:
 at your option.
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this project shall be dual-licensed as above, without any additional terms or conditions.
+
+---
+
+<div align="center">
+
+A **[QNTX](https://qntx.fun)** open-source project.
+
+<a href="https://qntx.fun"><img alt="QNTX" width="369" src="https://raw.githubusercontent.com/qntx/.github/main/profile/qntx-banner.svg" /></a>
+
+<!--prettier-ignore-->
+Code is law. We write both.
+
+</div>
