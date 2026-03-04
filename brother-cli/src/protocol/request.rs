@@ -925,6 +925,18 @@ pub enum Request {
         modifiers: Option<i64>,
     },
 
+    /// Start video recording (saves screencast frames to a directory).
+    RecordStart {
+        /// Output directory for frame files. Auto-created if missing.
+        #[serde(default)]
+        path: Option<String>,
+        /// Image quality (1–100, default 80).
+        #[serde(default = "default_screencast_quality")]
+        quality: u32,
+    },
+    /// Stop video recording and return saved frame count.
+    RecordStop,
+
     /// Set scoped HTTP headers for a specific origin (domain).
     /// Headers are injected via CDP Fetch interception for matching requests only.
     ScopedHeaders {

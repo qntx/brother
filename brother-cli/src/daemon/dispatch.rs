@@ -371,6 +371,10 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
             max_height,
         } => handlers::cmd_screencast_start(state, format, quality, max_width, max_height).await,
         Request::ScreencastStop => handlers::cmd_screencast_stop(state).await,
+        Request::RecordStart { path, quality } => {
+            handlers::cmd_record_start(state, path, quality).await
+        }
+        Request::RecordStop => handlers::cmd_record_stop(state).await,
         Request::HarStart => handlers::cmd_har_start(state).await,
         Request::HarStop { path } => handlers::cmd_har_stop(state, path.as_deref()).await,
         Request::SetAllowedDomains { domains } => {

@@ -45,6 +45,12 @@ pub struct DaemonState {
     pub scoped_headers: std::collections::HashMap<String, std::collections::HashMap<String, String>>,
     /// Handle to cancel the scoped-headers Fetch listener task.
     pub scoped_headers_cancel: Option<tokio::sync::watch::Sender<bool>>,
+    /// Video recording: output directory for screencast frames.
+    pub recording_dir: Option<String>,
+    /// Video recording: shared frame counter.
+    pub recording_frame_count: Arc<std::sync::atomic::AtomicU32>,
+    /// Handle to cancel the recording listener task.
+    pub recording_cancel: Option<tokio::sync::watch::Sender<bool>>,
 }
 
 pub async fn ensure_browser(state: &Arc<Mutex<DaemonState>>) -> Result<(), Response> {

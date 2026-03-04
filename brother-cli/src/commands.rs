@@ -617,6 +617,9 @@ pub enum Command {
     /// CDP screencast: start, stop.
     #[command(subcommand)]
     Screencast(ScreencastSub),
+    /// Record screencast frames to disk as JPEG files.
+    #[command(subcommand)]
+    Record(RecordSub),
     /// HAR (HTTP Archive) recording: start, stop.
     #[command(subcommand)]
     Har(HarSub),
@@ -865,6 +868,21 @@ pub enum ProfilerSub {
         #[arg(short, long)]
         output: Option<String>,
     },
+}
+
+/// Record subcommands (save screencast frames to disk).
+#[derive(Debug, Clone, clap::Subcommand)]
+pub enum RecordSub {
+    /// Start recording screencast frames.
+    Start {
+        /// Output directory (default: ~/.brother/recordings/rec_<timestamp>).
+        path: Option<String>,
+        /// JPEG quality (1–100).
+        #[arg(long, default_value = "80")]
+        quality: u32,
+    },
+    /// Stop recording and report saved frame count.
+    Stop,
 }
 
 /// Screencast subcommands.

@@ -68,6 +68,9 @@ pub async fn run_session(
         har_entries: None,
         scoped_headers: std::collections::HashMap::new(),
         scoped_headers_cancel: None,
+        recording_dir: None,
+        recording_frame_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+        recording_cancel: None,
     }));
 
     // Idle watcher

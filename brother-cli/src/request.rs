@@ -4,7 +4,7 @@ use brother::{MouseButton, ScrollDirection};
 
 use crate::commands::{
     AuthSub, ClipboardSub, Command, CookieSub, DialogSub, DiffSub, HarSub, InputSub, MouseSub,
-    ProfilerSub, ScreencastSub, StateSub, StorageSub, TabSub, TraceSub,
+    ProfilerSub, RecordSub, ScreencastSub, StateSub, StorageSub, TabSub, TraceSub,
 };
 use crate::protocol::{Request, RouteAction, WaitCondition, WaitStrategy};
 
@@ -377,6 +377,10 @@ pub fn build_request(cmd: Command) -> Request {
                 categories: parse_categories(categories),
             },
             ProfilerSub::Stop { output } => Request::ProfilerStop { path: output },
+        },
+        Command::Record(sub) => match sub {
+            RecordSub::Start { path, quality } => Request::RecordStart { path, quality },
+            RecordSub::Stop => Request::RecordStop,
         },
         Command::Screencast(sub) => match sub {
             ScreencastSub::Start {

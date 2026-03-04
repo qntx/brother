@@ -27,7 +27,8 @@ pub(super) use auth::{
 };
 pub(super) use diff::{cmd_diff_screenshot, cmd_diff_snapshot, cmd_diff_url};
 pub(super) use emulation::{
-    cmd_device, cmd_device_list, cmd_screencast_start, cmd_screencast_stop,
+    cmd_device, cmd_device_list, cmd_record_start, cmd_record_stop, cmd_screencast_start,
+    cmd_screencast_stop,
 };
 pub(super) use interaction::{
     cmd_click, cmd_expose, cmd_extra_headers, cmd_find, cmd_nth, cmd_type,
