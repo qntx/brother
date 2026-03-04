@@ -89,7 +89,7 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
                 state,
                 full_page,
                 selector.as_deref(),
-                &format,
+                format,
                 quality,
                 annotate,
             )
@@ -362,7 +362,7 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
             quality,
             max_width,
             max_height,
-        } => handlers::cmd_screencast_start(state, &format, quality, max_width, max_height).await,
+        } => handlers::cmd_screencast_start(state, format, quality, max_width, max_height).await,
         Request::ScreencastStop => handlers::cmd_screencast_stop(state).await,
         Request::HarStart => handlers::cmd_har_start(state).await,
         Request::HarStop { path } => handlers::cmd_har_stop(state, path.as_deref()).await,
@@ -381,10 +381,10 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
         } => page_ok!(
             state,
             inject_mouse_event(brother::RawMouseEvent {
-                event_type: &event_type,
+                event_type,
                 x,
                 y,
-                button: button.as_deref(),
+                button,
                 click_count,
                 delta_x,
                 delta_y,
@@ -400,7 +400,7 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
         } => page_ok!(
             state,
             inject_key_event(
-                &event_type,
+                event_type,
                 key.as_deref(),
                 code.as_deref(),
                 text.as_deref(),
@@ -413,7 +413,7 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
             modifiers,
         } => page_ok!(
             state,
-            inject_touch_event(&event_type, &touch_points, modifiers)
+            inject_touch_event(event_type, &touch_points, modifiers)
         ),
         Request::AuthSave {
             name,

@@ -13,6 +13,7 @@ pub use interaction::RawMouseEvent;
 mod navigation;
 mod query;
 mod screenshot;
+pub use screenshot::ImageFormat;
 mod snapshot_cmd;
 
 use std::sync::Arc;
@@ -59,6 +60,124 @@ pub enum MouseButton {
     Right,
     /// Middle mouse button.
     Middle,
+}
+
+/// CDP mouse event type for raw input injection.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub enum CdpMouseEventType {
+    /// Mouse button pressed.
+    #[serde(rename = "mousePressed")]
+    MousePressed,
+    /// Mouse button released.
+    #[serde(rename = "mouseReleased")]
+    MouseReleased,
+    /// Mouse moved.
+    #[serde(rename = "mouseMoved")]
+    MouseMoved,
+    /// Mouse wheel scrolled.
+    #[serde(rename = "mouseWheel")]
+    MouseWheel,
+}
+
+/// CDP keyboard event type for raw input injection.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub enum CdpKeyEventType {
+    /// Key pressed down.
+    #[serde(rename = "keyDown")]
+    KeyDown,
+    /// Key released.
+    #[serde(rename = "keyUp")]
+    KeyUp,
+    /// Character typed.
+    #[serde(rename = "char")]
+    Char,
+}
+
+/// CDP touch event type for raw input injection.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub enum CdpTouchEventType {
+    /// Touch started.
+    #[serde(rename = "touchStart")]
+    TouchStart,
+    /// Touch ended.
+    #[serde(rename = "touchEnd")]
+    TouchEnd,
+    /// Touch moved.
+    #[serde(rename = "touchMove")]
+    TouchMove,
+    /// Touch cancelled.
+    #[serde(rename = "touchCancel")]
+    TouchCancel,
+}
+
+impl std::fmt::Display for CdpMouseEventType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::MousePressed => "mousePressed",
+            Self::MouseReleased => "mouseReleased",
+            Self::MouseMoved => "mouseMoved",
+            Self::MouseWheel => "mouseWheel",
+        })
+    }
+}
+
+impl std::str::FromStr for CdpMouseEventType {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "mousePressed" => Ok(Self::MousePressed),
+            "mouseReleased" => Ok(Self::MouseReleased),
+            "mouseMoved" => Ok(Self::MouseMoved),
+            "mouseWheel" => Ok(Self::MouseWheel),
+            other => Err(format!("unknown mouse event type '{other}'")),
+        }
+    }
+}
+
+impl std::fmt::Display for CdpKeyEventType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::KeyDown => "keyDown",
+            Self::KeyUp => "keyUp",
+            Self::Char => "char",
+        })
+    }
+}
+
+impl std::str::FromStr for CdpKeyEventType {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "keyDown" => Ok(Self::KeyDown),
+            "keyUp" => Ok(Self::KeyUp),
+            "char" => Ok(Self::Char),
+            other => Err(format!("unknown key event type '{other}'")),
+        }
+    }
+}
+
+impl std::fmt::Display for CdpTouchEventType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::TouchStart => "touchStart",
+            Self::TouchEnd => "touchEnd",
+            Self::TouchMove => "touchMove",
+            Self::TouchCancel => "touchCancel",
+        })
+    }
+}
+
+impl std::str::FromStr for CdpTouchEventType {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "touchStart" => Ok(Self::TouchStart),
+            "touchEnd" => Ok(Self::TouchEnd),
+            "touchMove" => Ok(Self::TouchMove),
+            "touchCancel" => Ok(Self::TouchCancel),
+            other => Err(format!("unknown touch event type '{other}'")),
+        }
+    }
 }
 
 /// A captured console message from the browser.

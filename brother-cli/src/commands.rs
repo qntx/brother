@@ -71,7 +71,7 @@ pub enum Command {
         selector: Option<String>,
         /// Image format: `png` or `jpeg`.
         #[arg(short, long, default_value = "png")]
-        format: String,
+        format: brother::ImageFormat,
         /// JPEG quality (1-100).
         #[arg(short, long, default_value = "80")]
         quality: u8,
@@ -859,7 +859,7 @@ pub enum ScreencastSub {
     Start {
         /// Image format: `jpeg` or `png`.
         #[arg(long, default_value = "jpeg")]
-        format: String,
+        format: brother::ImageFormat,
         /// JPEG quality (1–100).
         #[arg(long, default_value = "80")]
         quality: u32,
@@ -929,7 +929,7 @@ pub enum InputSub {
     /// Inject a raw mouse event.
     Mouse {
         /// Event type: `mousePressed`, `mouseReleased`, `mouseMoved`, `mouseWheel`.
-        event_type: String,
+        event_type: brother::CdpMouseEventType,
         /// X coordinate.
         x: f64,
         /// Y coordinate.
@@ -953,7 +953,7 @@ pub enum InputSub {
     /// Inject a raw keyboard event.
     Keyboard {
         /// Event type: `keyDown`, `keyUp`, `char`.
-        event_type: String,
+        event_type: brother::CdpKeyEventType,
         /// Key value (e.g. `Enter`, `a`).
         #[arg(short, long)]
         key: Option<String>,
@@ -970,7 +970,7 @@ pub enum InputSub {
     /// Inject a raw touch event.
     Touch {
         /// Event type: `touchStart`, `touchEnd`, `touchMove`, `touchCancel`.
-        event_type: String,
+        event_type: brother::CdpTouchEventType,
         /// Touch points as JSON array `[[x,y],...]`.
         #[arg(short, long)]
         points: Option<String>,

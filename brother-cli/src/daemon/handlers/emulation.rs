@@ -57,7 +57,7 @@ pub(in crate::daemon) async fn cmd_device(state: &Arc<Mutex<DaemonState>>, name:
 
 pub(in crate::daemon) async fn cmd_screencast_start(
     state: &Arc<Mutex<DaemonState>>,
-    format: &str,
+    format: brother::ImageFormat,
     quality: u32,
     max_width: Option<u32>,
     max_height: Option<u32>,
@@ -69,10 +69,9 @@ pub(in crate::daemon) async fn cmd_screencast_start(
         Ok(p) => p,
         Err(r) => return r,
     };
-    let fmt = if format == "png" {
-        StartScreencastFormat::Png
-    } else {
-        StartScreencastFormat::Jpeg
+    let fmt = match format {
+        brother::ImageFormat::Png => StartScreencastFormat::Png,
+        brother::ImageFormat::Jpeg => StartScreencastFormat::Jpeg,
     };
     let params = StartScreencastParams::builder()
         .format(fmt)

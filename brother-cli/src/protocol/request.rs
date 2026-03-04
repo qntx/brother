@@ -1,14 +1,16 @@
 //! Request types sent from the CLI to the daemon.
 
-use brother::{MouseButton, ScrollDirection, SnapshotOptions};
+use brother::{
+    CdpKeyEventType, CdpMouseEventType, CdpTouchEventType, ImageFormat, MouseButton,
+    ScrollDirection, SnapshotOptions,
+};
 use serde::{Deserialize, Serialize};
 
 use super::types::{
     RouteAction, WaitCondition, WaitStrategy, default_click_count, default_content_type,
     default_diff_threshold, default_geo_accuracy, default_jpeg_quality, default_screencast_format,
-    default_screencast_quality, default_screenshot_format, default_scroll_px, default_status,
-    default_swipe_distance, default_timeout_ms, default_true, default_viewport_height,
-    default_viewport_width,
+    default_screencast_quality, default_scroll_px, default_status, default_swipe_distance,
+    default_timeout_ms, default_true, default_viewport_height, default_viewport_width,
 };
 
 /// A command sent from the CLI to the daemon.
@@ -103,9 +105,9 @@ pub enum Request {
         /// Optional CSS selector to screenshot a specific element.
         #[serde(default)]
         selector: Option<String>,
-        /// Image format: `"png"` or `"jpeg"` (default `"png"`).
-        #[serde(default = "default_screenshot_format")]
-        format: String,
+        /// Image format (default `png`).
+        #[serde(default)]
+        format: ImageFormat,
         /// JPEG quality (1-100, only for jpeg format).
         #[serde(default = "default_jpeg_quality")]
         quality: u8,
@@ -825,9 +827,9 @@ pub enum Request {
 
     /// Start CDP screencast (captures screen frames as base64 images).
     ScreencastStart {
-        /// Image format: `jpeg` or `png`. Default: `jpeg`.
+        /// Image format (default: `jpeg`).
         #[serde(default = "default_screencast_format")]
-        format: String,
+        format: ImageFormat,
         /// JPEG quality (1–100). Default: 80. Ignored for PNG.
         #[serde(default = "default_screencast_quality")]
         quality: u32,
@@ -869,8 +871,8 @@ pub enum Request {
 
     /// Inject a raw CDP mouse event (pair browsing / stream server).
     InputMouse {
-        /// Event type: `mousePressed`, `mouseReleased`, `mouseMoved`, `mouseWheel`.
-        event_type: String,
+        /// Event type.
+        event_type: CdpMouseEventType,
         /// X coordinate.
         x: f64,
         /// Y coordinate.
@@ -893,8 +895,8 @@ pub enum Request {
     },
     /// Inject a raw CDP keyboard event (pair browsing / stream server).
     InputKeyboard {
-        /// Event type: `keyDown`, `keyUp`, `char`.
-        event_type: String,
+        /// Event type.
+        event_type: CdpKeyEventType,
         /// Key value (e.g. `"Enter"`, `"a"`).
         #[serde(default)]
         key: Option<String>,
@@ -910,8 +912,8 @@ pub enum Request {
     },
     /// Inject a raw CDP touch event (pair browsing / stream server).
     InputTouch {
-        /// Event type: `touchStart`, `touchEnd`, `touchMove`, `touchCancel`.
-        event_type: String,
+        /// Event type.
+        event_type: CdpTouchEventType,
         /// Touch points as `[[x, y], ...]`.
         #[serde(default)]
         touch_points: Vec<(f64, f64)>,

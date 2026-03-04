@@ -120,7 +120,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     let screenshot_out = match &cli.command {
         Command::Screenshot { output, format, .. } => Some(output::ScreenshotOutput {
             path: output.clone(),
-            format: format.clone(),
+            format: *format,
         }),
         _ => None,
     };

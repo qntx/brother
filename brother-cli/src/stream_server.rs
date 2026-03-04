@@ -27,7 +27,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, broadcast};
 use tokio_tungstenite::tungstenite::Message;
 
-use brother::RawMouseEvent;
+use brother::{CdpKeyEventType, CdpMouseEventType, CdpTouchEventType, RawMouseEvent};
 
 use crate::daemon::state::{DaemonState, get_page};
 
@@ -37,7 +37,7 @@ use crate::daemon::state::{DaemonState, get_page};
 enum InputEvent {
     Mouse {
         #[serde(default = "default_mouse_moved")]
-        event_type: String,
+        event_type: CdpMouseEventType,
         #[serde(default)]
         x: f64,
         #[serde(default)]
@@ -55,7 +55,7 @@ enum InputEvent {
     },
     Keyboard {
         #[serde(default = "default_key_down")]
-        event_type: String,
+        event_type: CdpKeyEventType,
         #[serde(default)]
         key: Option<String>,
         #[serde(default)]
@@ -67,7 +67,7 @@ enum InputEvent {
     },
     Touch {
         #[serde(default = "default_touch_start")]
-        event_type: String,
+        event_type: CdpTouchEventType,
         #[serde(default)]
         points: Vec<[f64; 2]>,
         #[serde(default)]
@@ -75,9 +75,9 @@ enum InputEvent {
     },
 }
 
-fn default_mouse_moved() -> String { "mouseMoved".into() }
-fn default_key_down() -> String { "keyDown".into() }
-fn default_touch_start() -> String { "touchStart".into() }
+const fn default_mouse_moved() -> CdpMouseEventType { CdpMouseEventType::MouseMoved }
+const fn default_key_down() -> CdpKeyEventType { CdpKeyEventType::KeyDown }
+const fn default_touch_start() -> CdpTouchEventType { CdpTouchEventType::TouchStart }
 
 /// A screencast frame ready for broadcast.
 #[derive(Debug, Clone)]
@@ -219,10 +219,10 @@ async fn handle_input_message(text: &str, state: &Arc<Mutex<DaemonState>>) {
         } => {
             let _ = page
                 .inject_mouse_event(RawMouseEvent {
-                    event_type: &event_type,
+                    event_type,
                     x,
                     y,
-                    button: button.as_deref(),
+                    button,
                     click_count,
                     delta_x,
                     delta_y,
@@ -239,7 +239,7 @@ async fn handle_input_message(text: &str, state: &Arc<Mutex<DaemonState>>) {
         } => {
             let _ = page
                 .inject_key_event(
-                    &event_type,
+                    event_type,
                     key.as_deref(),
                     code.as_deref(),
                     text.as_deref(),
@@ -254,7 +254,7 @@ async fn handle_input_message(text: &str, state: &Arc<Mutex<DaemonState>>) {
         } => {
             let pts: Vec<(f64, f64)> = points.iter().map(|p| (p[0], p[1])).collect();
             let _ = page
-                .inject_touch_event(&event_type, &pts, modifiers)
+                .inject_touch_event(event_type, &pts, modifiers)
                 .await;
         }
     }

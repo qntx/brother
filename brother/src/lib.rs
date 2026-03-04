@@ -39,7 +39,7 @@ pub use config::{BrowserConfig, DEVICE_PRESETS, DevicePreset};
 pub use diff::{ScreenshotDiff, SnapshotDiff, diff_rgba, diff_snapshots};
 pub use error::{Error, Result};
 pub use page::{
-    ConsoleEntry, CookieInput, DialogInfo, JsError, MouseButton, Page, RawMouseEvent,
-    ScrollDirection,
+    CdpKeyEventType, CdpMouseEventType, CdpTouchEventType, ConsoleEntry, CookieInput, DialogInfo,
+    ImageFormat, JsError, MouseButton, Page, RawMouseEvent, ScrollDirection,
 };
 pub use snapshot::{Ref, RefMap, Snapshot, SnapshotOptions};

@@ -118,16 +118,12 @@ pub const fn default_click_count() -> u32 {
     1
 }
 
-pub fn default_screenshot_format() -> String {
-    "png".into()
-}
-
 pub const fn default_jpeg_quality() -> u8 {
     80
 }
 
-pub fn default_screencast_format() -> String {
-    "jpeg".into()
+pub const fn default_screencast_format() -> brother::ImageFormat {
+    brother::ImageFormat::Jpeg
 }
 
 pub const fn default_screencast_quality() -> u32 {

@@ -7,7 +7,7 @@ use crate::protocol::{Response, ResponseData};
 /// Screenshot save configuration extracted from CLI args.
 pub struct ScreenshotOutput {
     pub path: Option<String>,
-    pub format: String,
+    pub format: brother::ImageFormat,
 }
 
 /// Print a daemon response as JSON or plain text.
@@ -66,7 +66,7 @@ fn print_plain(data: Option<&ResponseData>, screenshot: Option<&ScreenshotOutput
         Some(ResponseData::Screenshot { data }) => {
             if let Some(ss) = screenshot {
                 let path = ss.path.clone().unwrap_or_else(|| {
-                    let ext = if ss.format == "jpeg" { "jpg" } else { "png" };
+                    let ext = ss.format.extension();
                     let ts = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map_or(0, |d| d.as_millis());
@@ -177,7 +177,7 @@ fn print_plain(data: Option<&ResponseData>, screenshot: Option<&ScreenshotOutput
         Some(ResponseData::AnnotatedScreenshot { data, annotations }) => {
             if let Some(ss) = screenshot {
                 let path = ss.path.clone().unwrap_or_else(|| {
-                    let ext = if ss.format == "jpeg" { "jpg" } else { "png" };
+                    let ext = ss.format.extension();
                     let ts = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map_or(0, |d| d.as_millis());

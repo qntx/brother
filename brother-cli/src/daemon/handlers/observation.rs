@@ -89,7 +89,7 @@ pub(in crate::daemon) async fn cmd_screenshot(
     state: &Arc<Mutex<DaemonState>>,
     full_page: bool,
     selector: Option<&str>,
-    format: &str,
+    format: brother::ImageFormat,
     quality: u8,
     annotate: bool,
 ) -> Response {

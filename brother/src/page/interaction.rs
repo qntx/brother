@@ -9,19 +9,21 @@ use chromiumoxide::cdp::browser_protocol::input::{
 
 use crate::error::{Error, Result};
 
-use super::{MouseButton, Page, ScrollDirection};
+use super::{
+    CdpKeyEventType, CdpMouseEventType, CdpTouchEventType, MouseButton, Page, ScrollDirection,
+};
 
 /// Raw CDP mouse event for injection (pair browsing / stream server).
 #[derive(Debug)]
-pub struct RawMouseEvent<'a> {
-    /// Event type: `"mousePressed"`, `"mouseReleased"`, `"mouseMoved"`, `"mouseWheel"`.
-    pub event_type: &'a str,
+pub struct RawMouseEvent {
+    /// Event type.
+    pub event_type: CdpMouseEventType,
     /// X coordinate.
     pub x: f64,
     /// Y coordinate.
     pub y: f64,
     /// Button: `"left"`, `"right"`, `"middle"`, `"none"`.
-    pub button: Option<&'a str>,
+    pub button: Option<String>,
     /// Click count.
     pub click_count: Option<i64>,
     /// Wheel delta X.
@@ -358,19 +360,14 @@ impl Page {
     }
 
     /// Inject a raw CDP mouse event (for stream server / pair browsing).
-    pub async fn inject_mouse_event(&self, ev: RawMouseEvent<'_>) -> Result<()> {
+    pub async fn inject_mouse_event(&self, ev: RawMouseEvent) -> Result<()> {
         let cdp_type = match ev.event_type {
-            "mousePressed" => DispatchMouseEventType::MousePressed,
-            "mouseReleased" => DispatchMouseEventType::MouseReleased,
-            "mouseMoved" => DispatchMouseEventType::MouseMoved,
-            "mouseWheel" => DispatchMouseEventType::MouseWheel,
-            other => {
-                return Err(Error::Snapshot(format!(
-                    "unknown mouse event type: {other}"
-                )));
-            }
+            CdpMouseEventType::MousePressed => DispatchMouseEventType::MousePressed,
+            CdpMouseEventType::MouseReleased => DispatchMouseEventType::MouseReleased,
+            CdpMouseEventType::MouseMoved => DispatchMouseEventType::MouseMoved,
+            CdpMouseEventType::MouseWheel => DispatchMouseEventType::MouseWheel,
         };
-        let cdp_button = match ev.button.unwrap_or("none") {
+        let cdp_button = match ev.button.as_deref().unwrap_or("none") {
             "left" => CdpMouseButton::Left,
             "right" => CdpMouseButton::Right,
             "middle" => CdpMouseButton::Middle,
@@ -401,23 +398,18 @@ impl Page {
     }
 
     /// Inject a raw CDP keyboard event (for stream server / pair browsing).
-    ///
-    /// `event_type`: `"keyDown"`, `"keyUp"`, `"char"`.
     pub async fn inject_key_event(
         &self,
-        event_type: &str,
+        event_type: CdpKeyEventType,
         key: Option<&str>,
         code: Option<&str>,
         text: Option<&str>,
         modifiers: Option<i64>,
     ) -> Result<()> {
         let cdp_type = match event_type {
-            "keyDown" => DispatchKeyEventType::KeyDown,
-            "keyUp" => DispatchKeyEventType::KeyUp,
-            "char" => DispatchKeyEventType::Char,
-            other => {
-                return Err(Error::Snapshot(format!("unknown key event type: {other}")));
-            }
+            CdpKeyEventType::KeyDown => DispatchKeyEventType::KeyDown,
+            CdpKeyEventType::KeyUp => DispatchKeyEventType::KeyUp,
+            CdpKeyEventType::Char => DispatchKeyEventType::Char,
         };
         let mut builder = DispatchKeyEventParams::builder().r#type(cdp_type);
         if let Some(k) = key {
@@ -440,11 +432,9 @@ impl Page {
     }
 
     /// Inject a raw CDP touch event (for stream server / pair browsing).
-    ///
-    /// `event_type`: `"touchStart"`, `"touchEnd"`, `"touchMove"`, `"touchCancel"`.
     pub async fn inject_touch_event(
         &self,
-        event_type: &str,
+        event_type: CdpTouchEventType,
         touch_points: &[(f64, f64)],
         modifiers: Option<i64>,
     ) -> Result<()> {
@@ -452,15 +442,10 @@ impl Page {
             DispatchTouchEventParams, DispatchTouchEventType, TouchPoint,
         };
         let cdp_type = match event_type {
-            "touchStart" => DispatchTouchEventType::TouchStart,
-            "touchEnd" => DispatchTouchEventType::TouchEnd,
-            "touchMove" => DispatchTouchEventType::TouchMove,
-            "touchCancel" => DispatchTouchEventType::TouchCancel,
-            other => {
-                return Err(Error::Snapshot(format!(
-                    "unknown touch event type: {other}"
-                )));
-            }
+            CdpTouchEventType::TouchStart => DispatchTouchEventType::TouchStart,
+            CdpTouchEventType::TouchEnd => DispatchTouchEventType::TouchEnd,
+            CdpTouchEventType::TouchMove => DispatchTouchEventType::TouchMove,
+            CdpTouchEventType::TouchCancel => DispatchTouchEventType::TouchCancel,
         };
         let points: Vec<TouchPoint> = touch_points
             .iter()
