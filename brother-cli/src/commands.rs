@@ -4,6 +4,8 @@ use clap::Subcommand;
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Auto-discover and connect to a running Chrome instance.
+    AutoConnect,
     /// Connect to an existing browser (requires Chrome launched with --remote-debugging-port).
     Connect {
         /// CDP target: port number (e.g. `9222`), ws:// URL, or http:// URL.

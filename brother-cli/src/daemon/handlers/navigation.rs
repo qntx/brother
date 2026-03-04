@@ -130,6 +130,143 @@ async fn resolve_cdp_endpoint(target: &str) -> brother::Result<String> {
         })
 }
 
+/// Auto-discover and connect to a running Chrome/Chromium instance.
+pub(in crate::daemon) async fn cmd_auto_connect(
+    state: &Arc<Mutex<DaemonState>>,
+) -> Response {
+    let ws_url = match auto_discover_chrome().await {
+        Ok(url) => url,
+        Err(e) => return Response::error(e),
+    };
+
+    let connect_result = Browser::connect(&ws_url).await;
+    let (browser, mut handler) = match connect_result {
+        Ok(pair) => pair,
+        Err(e) => return Response::error(format!("auto-connect failed: {e}")),
+    };
+    tokio::spawn(async move { while handler.next().await.is_some() {} });
+
+    let pages_result = browser.pages().await;
+    let pages = match pages_result {
+        Ok(p) if !p.is_empty() => p,
+        Ok(_) => match browser.new_blank_page().await {
+            Ok(p) => vec![p],
+            Err(e) => return Response::error(format!("connected but no pages: {e}")),
+        },
+        Err(e) => return Response::error(format!("connected but failed to list pages: {e}")),
+    };
+
+    let tab_count = pages.len();
+    let mut guard = state.lock().await;
+    guard.browser = Some(browser);
+    guard.pages = pages;
+    guard.active_tab = 0;
+
+    Response::ok_data(ResponseData::Text {
+        text: format!("auto-connected to {ws_url} ({tab_count} tabs)"),
+    })
+}
+
+/// Auto-discover a running Chrome/Chromium instance.
+///
+/// Strategy:
+/// 1. Read `DevToolsActivePort` from Chrome's default user data directories
+/// 2. If found, probe via HTTP `/json/version`; if that fails (Chrome 144+),
+///    try a direct `WebSocket` connection using the path from the file
+/// 3. If no `DevToolsActivePort` found, probe common debug ports (9222, 9229)
+async fn auto_discover_chrome() -> Result<String, String> {
+    let user_data_dirs = chrome_user_data_dirs();
+    for dir in &user_data_dirs {
+        if let Some((port, ws_path)) = read_devtools_active_port(dir) {
+            if let Ok(ws_url) = probe_debug_port(port).await {
+                return Ok(ws_url);
+            }
+            let direct_ws = format!("ws://127.0.0.1:{port}{ws_path}");
+            if Browser::connect(&direct_ws).await.is_ok() {
+                return Ok(direct_ws);
+            }
+        }
+    }
+
+    for port in [9222, 9229] {
+        if let Ok(ws_url) = probe_debug_port(port).await {
+            return Ok(ws_url);
+        }
+    }
+
+    let hint = if cfg!(target_os = "windows") {
+        "Start Chrome with: chrome.exe --remote-debugging-port=9222\n\
+         Or enable remote debugging in Chrome 144+ at chrome://inspect/#remote-debugging"
+    } else if cfg!(target_os = "macos") {
+        "Start Chrome with: /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome --remote-debugging-port=9222\n\
+         Or enable remote debugging in Chrome 144+ at chrome://inspect/#remote-debugging"
+    } else {
+        "Start Chrome with: google-chrome --remote-debugging-port=9222\n\
+         Or enable remote debugging in Chrome 144+ at chrome://inspect/#remote-debugging"
+    };
+
+    Err(format!("No running Chrome instance with remote debugging found.\n{hint}"))
+}
+
+/// Get Chrome's default user data directory paths for the current platform.
+fn chrome_user_data_dirs() -> Vec<std::path::PathBuf> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+
+    if cfg!(target_os = "windows") {
+        let local = std::env::var("LOCALAPPDATA")
+            .map_or_else(|_| home.join("AppData").join("Local"), std::path::PathBuf::from);
+        vec![
+            local.join("Google").join("Chrome").join("User Data"),
+            local.join("Google").join("Chrome SxS").join("User Data"),
+            local.join("Chromium").join("User Data"),
+        ]
+    } else if cfg!(target_os = "macos") {
+        let app_support = home.join("Library").join("Application Support");
+        vec![
+            app_support.join("Google").join("Chrome"),
+            app_support.join("Google").join("Chrome Canary"),
+            app_support.join("Chromium"),
+        ]
+    } else {
+        vec![
+            home.join(".config").join("google-chrome"),
+            home.join(".config").join("google-chrome-unstable"),
+            home.join(".config").join("chromium"),
+        ]
+    }
+}
+
+/// Read the `DevToolsActivePort` file from a Chrome user data directory.
+/// Returns `(port, ws_path)` if valid.
+fn read_devtools_active_port(user_data_dir: &std::path::Path) -> Option<(u16, String)> {
+    let path = user_data_dir.join("DevToolsActivePort");
+    let content = std::fs::read_to_string(&path).ok()?;
+    let mut lines = content.trim().lines();
+    let port: u16 = lines.next()?.trim().parse().ok()?;
+    let ws_path = lines.next()?.trim().to_owned();
+    if ws_path.is_empty() {
+        return None;
+    }
+    Some((port, ws_path))
+}
+
+/// Probe a Chrome debug port via HTTP `/json/version` and return the `WebSocket` URL.
+async fn probe_debug_port(port: u16) -> Result<String, String> {
+    let url = format!("http://127.0.0.1:{port}/json/version");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    body["webSocketDebuggerUrl"]
+        .as_str()
+        .map(String::from)
+        .ok_or_else(|| "webSocketDebuggerUrl not found".to_owned())
+}
+
 /// Switch execution context to a child frame.
 pub(in crate::daemon) async fn cmd_frame(
     state: &Arc<Mutex<DaemonState>>,

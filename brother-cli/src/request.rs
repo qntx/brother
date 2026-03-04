@@ -11,6 +11,7 @@ use crate::protocol::{Request, RouteAction, WaitCondition, WaitStrategy};
 /// Map CLI subcommand to daemon protocol request (consumes the command).
 pub fn build_request(cmd: Command) -> Request {
     match cmd {
+        Command::AutoConnect => Request::AutoConnect,
         Command::Connect { target } => Request::Connect { target },
         Command::Open { url, headers } => Request::Navigate {
             url: normalize_url(&url),

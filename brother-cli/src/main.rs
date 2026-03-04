@@ -65,6 +65,10 @@ struct Cli {
     #[arg(long, global = true)]
     download_path: Option<String>,
 
+    /// Auto-discover and connect to a running Chrome instance.
+    #[arg(long, global = true)]
+    auto_connect: bool,
+
     /// Named session for daemon isolation (default: "default").
     #[arg(long, global = true, default_value = "default")]
     session: String,
@@ -115,6 +119,12 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     // Send Launch request if any launch options are configured.
     if let Some(req) = launch {
         let _ = client.send(&req).await?;
+    }
+
+    // Auto-connect to running Chrome if --auto-connect flag is set.
+    let auto_connect = cli.auto_connect || cfg.auto_connect.unwrap_or(false);
+    if auto_connect && !matches!(cli.command, Command::AutoConnect | Command::Connect { .. }) {
+        let _ = client.send(&protocol::Request::AutoConnect).await?;
     }
 
     let screenshot_out = match &cli.command {

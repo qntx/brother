@@ -70,6 +70,7 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
             )
             .await
         }
+        Request::AutoConnect => handlers::cmd_auto_connect(state).await,
         Request::Connect { target } => handlers::cmd_connect(state, &target).await,
         Request::Navigate { url, wait, headers } => {
             handlers::cmd_navigate(state, &url, wait, headers).await

@@ -67,6 +67,9 @@ pub enum Request {
         storage_state: Option<String>,
     },
 
+    /// Auto-discover and connect to a running Chrome/Chromium instance.
+    AutoConnect,
+
     /// Connect to an existing browser via CDP websocket URL or debugging port.
     Connect {
         /// CDP websocket URL (e.g. `ws://127.0.0.1:9222/...`), or just a port number.
