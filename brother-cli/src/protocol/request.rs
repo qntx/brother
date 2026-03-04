@@ -483,17 +483,29 @@ pub enum Request {
         /// Y coordinate.
         y: f64,
     },
-    /// Press a mouse button down at the current position.
+    /// Press a mouse button down at the given coordinates.
     MouseDown {
         /// Mouse button (default left).
         #[serde(default)]
         button: MouseButton,
+        /// X coordinate.
+        #[serde(default)]
+        x: f64,
+        /// Y coordinate.
+        #[serde(default)]
+        y: f64,
     },
-    /// Release a mouse button at the current position.
+    /// Release a mouse button at the given coordinates.
     MouseUp {
         /// Mouse button (default left).
         #[serde(default)]
         button: MouseButton,
+        /// X coordinate.
+        #[serde(default)]
+        x: f64,
+        /// Y coordinate.
+        #[serde(default)]
+        y: f64,
     },
     /// Scroll with the mouse wheel.
     Wheel {

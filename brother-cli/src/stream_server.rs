@@ -75,9 +75,15 @@ enum InputEvent {
     },
 }
 
-const fn default_mouse_moved() -> CdpMouseEventType { CdpMouseEventType::MouseMoved }
-const fn default_key_down() -> CdpKeyEventType { CdpKeyEventType::KeyDown }
-const fn default_touch_start() -> CdpTouchEventType { CdpTouchEventType::TouchStart }
+const fn default_mouse_moved() -> CdpMouseEventType {
+    CdpMouseEventType::MouseMoved
+}
+const fn default_key_down() -> CdpKeyEventType {
+    CdpKeyEventType::KeyDown
+}
+const fn default_touch_start() -> CdpTouchEventType {
+    CdpTouchEventType::TouchStart
+}
 
 /// A screencast frame ready for broadcast.
 #[derive(Debug, Clone)]
@@ -253,9 +259,7 @@ async fn handle_input_message(text: &str, state: &Arc<Mutex<DaemonState>>) {
             modifiers,
         } => {
             let pts: Vec<(f64, f64)> = points.iter().map(|p| (p[0], p[1])).collect();
-            let _ = page
-                .inject_touch_event(event_type, &pts, modifiers)
-                .await;
+            let _ = page.inject_touch_event(event_type, &pts, modifiers).await;
         }
     }
 }

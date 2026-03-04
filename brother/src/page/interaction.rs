@@ -58,12 +58,29 @@ impl Page {
         Ok(())
     }
 
-    /// Fill an input by clearing it first, then typing.
+    /// Fill an input/textarea by programmatically setting its value and
+    /// dispatching `input` + `change` events. This is more robust than the
+    /// keystroke approach (Ctrl+A → Delete → type) because it works reliably
+    /// on ContentEditable elements, shadow DOM inputs, and custom Web Components.
     pub async fn fill(&self, target: &str, value: &str) -> Result<()> {
-        self.focus(target).await?;
-        self.key_press("Control+a").await?;
-        self.key_press("Delete").await?;
-        self.type_text(value).await
+        let oid = self.resolve_target_object(target).await?;
+        let escaped = value.replace('\\', "\\\\").replace('\'', "\\'");
+        let js = format!(
+            "function() {{\
+                this.focus();\
+                if (this.tagName === 'SELECT') {{\
+                    this.value = '{escaped}';\
+                }} else if (this.isContentEditable) {{\
+                    this.textContent = '{escaped}';\
+                }} else {{\
+                    this.value = '{escaped}';\
+                }}\
+                this.dispatchEvent(new Event('input', {{ bubbles: true }}));\
+                this.dispatchEvent(new Event('change', {{ bubbles: true }}));\
+            }}"
+        );
+        self.call_fn_on(oid, &js).await?;
+        Ok(())
     }
 
     /// Type text into an already-focused element (or focus the target first).
@@ -162,6 +179,7 @@ impl Page {
         if button == MouseButton::Left && click_count == 1 && delay_ms == 0 {
             return self.click(target).await;
         }
+        self.scroll_into_view(target).await?;
         let center = self.resolve_target_center(target).await?;
         let cdp_btn = Self::to_cdp_button(button);
         let count = i64::from(click_count);
@@ -207,15 +225,13 @@ impl Page {
     }
 
     /// Set an input value directly via JS (no key events fired).
+    ///
+    /// Supports both ref targets (`@e1`) and CSS selectors.
     pub async fn set_value(&self, target: &str, value: &str) -> Result<()> {
-        let escaped_sel = target.replace('\'', "\\'");
-        let escaped_val = value.replace('\\', "\\\\").replace('\'', "\\'");
-        let js = format!(
-            "(() => {{ const el = document.querySelector('{escaped_sel}'); \
-             if (!el) throw new Error('Element not found: {escaped_sel}'); \
-             el.value = '{escaped_val}'; }})()"
-        );
-        self.eval(&js).await?;
+        let oid = self.resolve_target_object(target).await?;
+        let escaped = value.replace('\\', "\\\\").replace('\'', "\\'");
+        let js = format!("function() {{ this.value = '{escaped}'; }}");
+        self.call_fn_on(oid, &js).await?;
         Ok(())
     }
 
@@ -249,16 +265,42 @@ impl Page {
         self.type_chars(text, 10).await
     }
 
-    /// Dispatch each character as a `Char` key event with `delay_ms` between keystrokes.
+    /// Dispatch each character as a full key event sequence (keyDown → char → keyUp)
+    /// with `delay_ms` between keystrokes. This matches Playwright's
+    /// `pressSequentially` behavior and ensures frameworks listening to
+    /// keydown/keyup events (React, Vue, etc.) respond correctly.
     async fn type_chars(&self, text: &str, delay_ms: u64) -> Result<()> {
+        let build_err = |e: String| Error::Cdp(chromiumoxide::error::CdpError::msg(e));
         for ch in text.chars() {
+            let ch_str = ch.to_string();
+            self.inner
+                .execute(
+                    DispatchKeyEventParams::builder()
+                        .r#type(DispatchKeyEventType::KeyDown)
+                        .text(&ch_str)
+                        .key(&ch_str)
+                        .build()
+                        .map_err(build_err)?,
+                )
+                .await
+                .map_err(Error::Cdp)?;
             self.inner
                 .execute(
                     DispatchKeyEventParams::builder()
                         .r#type(DispatchKeyEventType::Char)
-                        .text(ch.to_string())
+                        .text(&ch_str)
                         .build()
-                        .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?,
+                        .map_err(build_err)?,
+                )
+                .await
+                .map_err(Error::Cdp)?;
+            self.inner
+                .execute(
+                    DispatchKeyEventParams::builder()
+                        .r#type(DispatchKeyEventType::KeyUp)
+                        .key(&ch_str)
+                        .build()
+                        .map_err(build_err)?,
                 )
                 .await
                 .map_err(Error::Cdp)?;
@@ -299,13 +341,13 @@ impl Page {
         Ok(())
     }
 
-    /// Press a mouse button down at the current position.
-    pub async fn mouse_down(&self, button: MouseButton) -> Result<()> {
+    /// Press a mouse button down at the given coordinates.
+    pub async fn mouse_down(&self, button: MouseButton, x: f64, y: f64) -> Result<()> {
         let params = DispatchMouseEventParams::builder()
             .r#type(DispatchMouseEventType::MousePressed)
             .button(Self::to_cdp_button(button))
-            .x(0)
-            .y(0)
+            .x(x)
+            .y(y)
             .click_count(1)
             .build()
             .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?;
@@ -313,13 +355,13 @@ impl Page {
         Ok(())
     }
 
-    /// Release a mouse button at the current position.
-    pub async fn mouse_up(&self, button: MouseButton) -> Result<()> {
+    /// Release a mouse button at the given coordinates.
+    pub async fn mouse_up(&self, button: MouseButton, x: f64, y: f64) -> Result<()> {
         let params = DispatchMouseEventParams::builder()
             .r#type(DispatchMouseEventType::MouseReleased)
             .button(Self::to_cdp_button(button))
-            .x(0)
-            .y(0)
+            .x(x)
+            .y(y)
             .click_count(1)
             .build()
             .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?;
@@ -328,14 +370,21 @@ impl Page {
     }
 
     /// Scroll with the mouse wheel, optionally targeting an element.
+    ///
+    /// When a selector is provided, the element center is used as the event
+    /// position (after hovering). Otherwise the viewport center is used.
     pub async fn wheel(&self, delta_x: f64, delta_y: f64, selector: Option<&str>) -> Result<()> {
-        if let Some(sel) = selector {
-            self.hover(sel).await?;
-        }
+        let (x, y) = if let Some(sel) = selector {
+            let center = self.resolve_target_center(sel).await?;
+            self.inner.move_mouse(center).await.map_err(Error::Cdp)?;
+            (center.x, center.y)
+        } else {
+            (0.0, 0.0)
+        };
         let params = DispatchMouseEventParams::builder()
             .r#type(DispatchMouseEventType::MouseWheel)
-            .x(0)
-            .y(0)
+            .x(x)
+            .y(y)
             .delta_x(delta_x)
             .delta_y(delta_y)
             .build()
@@ -503,10 +552,7 @@ impl Page {
             tokio::time::sleep(step_delay).await;
         }
 
-        let end = DispatchTouchEventParams::new(
-            DispatchTouchEventType::TouchEnd,
-            vec![],
-        );
+        let end = DispatchTouchEventParams::new(DispatchTouchEventType::TouchEnd, vec![]);
         self.inner.execute(end).await.map_err(Error::Cdp)?;
         Ok(())
     }

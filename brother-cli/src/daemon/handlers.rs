@@ -33,7 +33,9 @@ pub(super) use emulation::{
 pub(super) use interaction::{
     cmd_click, cmd_expose, cmd_extra_headers, cmd_find, cmd_nth, cmd_type,
 };
-pub(super) use navigation::{cmd_auto_connect, cmd_connect, cmd_frame, cmd_main_frame, cmd_navigate};
+pub(super) use navigation::{
+    cmd_auto_connect, cmd_connect, cmd_frame, cmd_main_frame, cmd_navigate,
+};
 pub(super) use network::{
     cmd_clear_scoped_headers, cmd_download, cmd_downloads, cmd_har_start, cmd_har_stop,
     cmd_requests, cmd_response_body, cmd_route, cmd_scoped_headers, cmd_set_download_path,

@@ -173,11 +173,15 @@ pub fn build_request(cmd: Command) -> Request {
         Command::Highlight { target } => Request::Highlight { target },
         Command::Mouse(sub) => match sub {
             MouseSub::Move { x, y } => Request::MouseMove { x, y },
-            MouseSub::Down { button } => Request::MouseDown {
+            MouseSub::Down { button, x, y } => Request::MouseDown {
                 button: parse_mouse_button(&button),
+                x,
+                y,
             },
-            MouseSub::Up { button } => Request::MouseUp {
+            MouseSub::Up { button, x, y } => Request::MouseUp {
                 button: parse_mouse_button(&button),
+                x,
+                y,
             },
         },
         Command::Wheel {

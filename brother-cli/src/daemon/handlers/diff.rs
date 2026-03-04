@@ -59,7 +59,10 @@ pub(in crate::daemon) async fn cmd_diff_url(
         Err(e) => return Response::error(format!("snapshot A: {e}")),
     };
     let screenshot_a = if screenshot {
-        match page.screenshot(false, None, brother::ImageFormat::Png, Some(80)).await {
+        match page
+            .screenshot(false, None, brother::ImageFormat::Png, Some(80))
+            .await
+        {
             Ok(b) => Some(b),
             Err(e) => return Response::error(format!("screenshot A: {e}")),
         }
@@ -76,7 +79,10 @@ pub(in crate::daemon) async fn cmd_diff_url(
         Err(e) => return Response::error(format!("snapshot B: {e}")),
     };
     let screenshot_b = if screenshot {
-        match page.screenshot(false, None, brother::ImageFormat::Png, Some(80)).await {
+        match page
+            .screenshot(false, None, brother::ImageFormat::Png, Some(80))
+            .await
+        {
             Ok(b) => Some(b),
             Err(e) => return Response::error(format!("screenshot B: {e}")),
         }
@@ -144,7 +150,10 @@ pub(in crate::daemon) async fn cmd_diff_screenshot(
     };
 
     // Take current screenshot
-    let current_bytes = match page.screenshot(full_page, None, brother::ImageFormat::Png, Some(80)).await {
+    let current_bytes = match page
+        .screenshot(full_page, None, brother::ImageFormat::Png, Some(80))
+        .await
+    {
         Ok(b) => b,
         Err(e) => return Response::error(format!("screenshot failed: {e}")),
     };

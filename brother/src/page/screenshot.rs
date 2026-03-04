@@ -63,7 +63,9 @@ impl std::str::FromStr for ImageFormat {
         match s.to_ascii_lowercase().as_str() {
             "png" => Ok(Self::Png),
             "jpeg" | "jpg" => Ok(Self::Jpeg),
-            other => Err(format!("unknown image format '{other}', expected 'png' or 'jpeg'")),
+            other => Err(format!(
+                "unknown image format '{other}', expected 'png' or 'jpeg'"
+            )),
         }
     }
 }

@@ -131,9 +131,7 @@ async fn resolve_cdp_endpoint(target: &str) -> brother::Result<String> {
 }
 
 /// Auto-discover and connect to a running Chrome/Chromium instance.
-pub(in crate::daemon) async fn cmd_auto_connect(
-    state: &Arc<Mutex<DaemonState>>,
-) -> Response {
+pub(in crate::daemon) async fn cmd_auto_connect(state: &Arc<Mutex<DaemonState>>) -> Response {
     let ws_url = match auto_discover_chrome().await {
         Ok(url) => url,
         Err(e) => return Response::error(e),
@@ -205,7 +203,9 @@ async fn auto_discover_chrome() -> Result<String, String> {
          Or enable remote debugging in Chrome 144+ at chrome://inspect/#remote-debugging"
     };
 
-    Err(format!("No running Chrome instance with remote debugging found.\n{hint}"))
+    Err(format!(
+        "No running Chrome instance with remote debugging found.\n{hint}"
+    ))
 }
 
 /// Get Chrome's default user data directory paths for the current platform.
@@ -215,8 +215,10 @@ fn chrome_user_data_dirs() -> Vec<std::path::PathBuf> {
     };
 
     if cfg!(target_os = "windows") {
-        let local = std::env::var("LOCALAPPDATA")
-            .map_or_else(|_| home.join("AppData").join("Local"), std::path::PathBuf::from);
+        let local = std::env::var("LOCALAPPDATA").map_or_else(
+            |_| home.join("AppData").join("Local"),
+            std::path::PathBuf::from,
+        );
         vec![
             local.join("Google").join("Chrome").join("User Data"),
             local.join("Google").join("Chrome SxS").join("User Data"),

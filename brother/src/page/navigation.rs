@@ -17,23 +17,23 @@ impl Page {
 
     /// Go back in history.
     pub async fn go_back(&self) -> Result<()> {
-        let idx = self.current_history_index().await?;
-        let entry_id = i64::try_from(idx.saturating_sub(1)).unwrap_or(0);
-        self.inner
-            .execute(NavigateToHistoryEntryParams::new(entry_id))
-            .await
-            .map_err(Error::Cdp)?;
+        if let Some(entry_id) = self.history_entry_id(-1).await? {
+            self.inner
+                .execute(NavigateToHistoryEntryParams::new(entry_id))
+                .await
+                .map_err(Error::Cdp)?;
+        }
         Ok(())
     }
 
     /// Go forward in history.
     pub async fn go_forward(&self) -> Result<()> {
-        let idx = self.current_history_index().await?;
-        let entry_id = i64::try_from(idx + 1).unwrap_or(i64::MAX);
-        self.inner
-            .execute(NavigateToHistoryEntryParams::new(entry_id))
-            .await
-            .map_err(Error::Cdp)?;
+        if let Some(entry_id) = self.history_entry_id(1).await? {
+            self.inner
+                .execute(NavigateToHistoryEntryParams::new(entry_id))
+                .await
+                .map_err(Error::Cdp)?;
+        }
         Ok(())
     }
 

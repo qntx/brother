@@ -31,7 +31,9 @@ pub(in crate::daemon) async fn cmd_route(
     } else {
         let body_esc = body.replace('\'', "\\'").replace('\n', "\\n");
         let ct = content_type.replace('\'', "\\'");
-        format!("{{ pattern: '{pat}', action: 'fulfill', status: {status}, body: '{body_esc}', contentType: '{ct}' }}")
+        format!(
+            "{{ pattern: '{pat}', action: 'fulfill', status: {status}, body: '{body_esc}', contentType: '{ct}' }}"
+        )
     };
     let js = format!(
         r"(() => {{
@@ -294,10 +296,9 @@ async fn poll_for_new_file(
 /// Get the download directory from state, or return an error response.
 async fn require_download_dir(state: &Arc<Mutex<DaemonState>>) -> Result<String, Response> {
     let guard = state.lock().await;
-    guard
-        .download_path
-        .clone()
-        .ok_or_else(|| Response::error("no download path configured. Use 'set-download-path <dir>' first."))
+    guard.download_path.clone().ok_or_else(|| {
+        Response::error("no download path configured. Use 'set-download-path <dir>' first.")
+    })
 }
 
 /// Wait for a download to complete by polling the download directory for new files.
@@ -588,32 +589,34 @@ pub(in crate::daemon) async fn cmd_clear_scoped_headers(
         stop_fetch_interception(state).await;
         let _ = page
             .inner()
-            .execute(
-                chromiumoxide::cdp::browser_protocol::fetch::DisableParams::default(),
-            )
+            .execute(chromiumoxide::cdp::browser_protocol::fetch::DisableParams::default())
             .await;
     } else if let Err(e) = restart_fetch_interception(state, &page).await {
         return Response::error(format!("failed to update fetch interception: {e}"));
     }
 
-    let msg = origin.map_or_else(
-        || "cleared all scoped headers".into(),
-        |o| format!("cleared scoped headers for \"{o}\""),
-    );
+    let msg = if let Some(o) = origin {
+        format!("cleared scoped headers for \"{o}\"")
+    } else {
+        "cleared all scoped headers".into()
+    };
     Response::ok_data(ResponseData::Text { text: msg })
 }
 
 /// Convert an origin string to a URL pattern for CDP Fetch `RequestPattern`.
 fn origin_to_url_pattern(origin: &str) -> String {
-    let raw = if origin.contains("://") {
-        origin.to_string()
+    if let Ok(url) = url::Url::parse(
+        if origin.contains("://") {
+            origin.to_string()
+        } else {
+            format!("https://{origin}")
+        }
+        .as_str(),
+    ) {
+        format!("*://{host}/*", host = url.host_str().unwrap_or(origin))
     } else {
-        format!("https://{origin}")
-    };
-    url::Url::parse(&raw).map_or_else(
-        |_| format!("*://{origin}/*"),
-        |url| format!("*://{host}/*", host = url.host_str().unwrap_or(origin)),
-    )
+        format!("*://{origin}/*")
+    }
 }
 
 /// Stop the current Fetch listener task (if any).
@@ -629,9 +632,7 @@ async fn restart_fetch_interception(
     state: &Arc<Mutex<DaemonState>>,
     page: &brother::Page,
 ) -> Result<(), String> {
-    use chromiumoxide::cdp::browser_protocol::fetch::{
-        ContinueRequestParams, EnableParams, HeaderEntry, RequestPattern,
-    };
+    use chromiumoxide::cdp::browser_protocol::fetch::{EnableParams, RequestPattern};
     use futures::StreamExt;
 
     // Cancel previous listener
@@ -681,6 +682,9 @@ async fn restart_fetch_interception(
                     };
 
                     // Build header list: original request headers + scoped overrides
+                    use chromiumoxide::cdp::browser_protocol::fetch::{
+                        ContinueRequestParams, HeaderEntry,
+                    };
                     // Headers is a newtype around serde_json::Map; serialize to access entries
                     let headers_map: serde_json::Map<String, serde_json::Value> =
                         serde_json::from_value(serde_json::to_value(&event.request.headers).unwrap_or_default())
@@ -700,7 +704,7 @@ async fn restart_fetch_interception(
                         if let Some(existing) = header_entries.iter_mut().find(|h| {
                             h.name.eq_ignore_ascii_case(name)
                         }) {
-                            existing.value.clone_from(value);
+                            existing.value = value.clone();
                         } else {
                             header_entries.push(HeaderEntry::new(
                                 name.clone(),
@@ -737,10 +741,10 @@ fn merge_headers_for_url(
         let pattern_host = pattern
             .strip_prefix("*://")
             .and_then(|s| s.strip_suffix("/*"));
-        if let (Some(ph), Some(h)) = (pattern_host, &host)
-            && (h == ph || h.ends_with(&format!(".{ph}")))
-        {
-            merged.extend(headers.iter().map(|(k, v)| (k.clone(), v.clone())));
+        if let (Some(ph), Some(h)) = (pattern_host, &host) {
+            if h == ph || h.ends_with(&format!(".{ph}")) {
+                merged.extend(headers.clone());
+            }
         }
     }
     merged

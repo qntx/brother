@@ -280,8 +280,8 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
         Request::SelectAll { target } => page_ok!(state, select_all_text(&target)),
         Request::Highlight { target } => page_ok!(state, &target, highlight(&target)),
         Request::MouseMove { x, y } => page_ok!(state, mouse_move(x, y)),
-        Request::MouseDown { button } => page_ok!(state, mouse_down(button)),
-        Request::MouseUp { button } => page_ok!(state, mouse_up(button)),
+        Request::MouseDown { button, x, y } => page_ok!(state, mouse_down(button, x, y)),
+        Request::MouseUp { button, x, y } => page_ok!(state, mouse_up(button, x, y)),
         Request::Wheel {
             delta_x,
             delta_y,

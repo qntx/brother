@@ -46,10 +46,7 @@ const AUTO_USER_SELECTORS: &[&str] = &[
     "input[type='text']",
 ];
 
-const AUTO_SUBMIT_SELECTORS: &[&str] = &[
-    "button[type='submit']",
-    "input[type='submit']",
-];
+const AUTO_SUBMIT_SELECTORS: &[&str] = &["button[type='submit']", "input[type='submit']"];
 
 /// Try each selector in order, returning the first one whose element is visible.
 async fn detect_selector(page: &brother::Page, candidates: &[&str]) -> Option<String> {
@@ -85,10 +82,12 @@ pub(in crate::daemon) async fn cmd_auth_login(
     } else {
         match detect_selector(&page, AUTO_USER_SELECTORS).await {
             Some(s) => s,
-            None => return Response::error(format!(
-                "auth login failed for '{name}': could not find username field. \
+            None => {
+                return Response::error(format!(
+                    "auth login failed for '{name}': could not find username field. \
                  Specify --username-selector with auth save."
-            )),
+                ));
+            }
         }
     };
     if let Err(e) = page.fill(&user_sel, &profile.username).await {
@@ -108,10 +107,12 @@ pub(in crate::daemon) async fn cmd_auth_login(
     } else {
         match detect_selector(&page, AUTO_SUBMIT_SELECTORS).await {
             Some(s) => s,
-            None => return Response::error(format!(
-                "auth login failed for '{name}': could not find submit button. \
+            None => {
+                return Response::error(format!(
+                    "auth login failed for '{name}': could not find submit button. \
                  Specify --submit-selector with auth save."
-            )),
+                ));
+            }
         }
     };
     if let Err(e) = page.click(&submit_sel).await {

@@ -942,17 +942,29 @@ pub enum MouseSub {
         /// Y coordinate.
         y: f64,
     },
-    /// Press a mouse button down.
+    /// Press a mouse button down at given coordinates.
     Down {
         /// Button: `left`, `right`, `middle`.
         #[arg(short, long, default_value = "left")]
         button: String,
+        /// X coordinate (default 0).
+        #[arg(short, long, default_value_t = 0.0)]
+        x: f64,
+        /// Y coordinate (default 0).
+        #[arg(short, long, default_value_t = 0.0)]
+        y: f64,
     },
-    /// Release a mouse button.
+    /// Release a mouse button at given coordinates.
     Up {
         /// Button: `left`, `right`, `middle`.
         #[arg(short, long, default_value = "left")]
         button: String,
+        /// X coordinate (default 0).
+        #[arg(short, long, default_value_t = 0.0)]
+        x: f64,
+        /// Y coordinate (default 0).
+        #[arg(short, long, default_value_t = 0.0)]
+        y: f64,
     },
 }
 
