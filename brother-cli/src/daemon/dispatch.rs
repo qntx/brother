@@ -6,13 +6,12 @@ use tokio::sync::Mutex;
 
 use crate::protocol::{Request, Response, ResponseData};
 
-use super::handlers;
 use super::macros::{page_display, page_eval, page_ok, page_text};
 use super::state::DaemonState;
+use super::{auth, debug, diff, emulate, interact, navigate, network, observe, persist, tab};
 
 #[allow(clippy::cognitive_complexity, clippy::large_stack_frames)]
 pub(super) async fn dispatch(req: Request, state: &Arc<Mutex<DaemonState>>) -> Response {
-    // Confirm/Deny bypass policy check
     match &req {
         Request::Confirm { confirmation_id } => {
             return cmd_confirm(state, confirmation_id).await;
@@ -70,15 +69,15 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
             )
             .await
         }
-        Request::AutoConnect => handlers::cmd_auto_connect(state).await,
-        Request::Connect { target } => handlers::cmd_connect(state, &target).await,
+        Request::AutoConnect => navigate::cmd_auto_connect(state).await,
+        Request::Connect { target } => navigate::cmd_connect(state, &target).await,
         Request::Navigate { url, wait, headers } => {
-            handlers::cmd_navigate(state, &url, wait, headers).await
+            navigate::cmd_navigate(state, &url, wait, headers).await
         }
         Request::Back => page_ok!(state, go_back()),
         Request::Forward => page_ok!(state, go_forward()),
         Request::Reload => page_ok!(state, reload()),
-        Request::Snapshot { options } => handlers::cmd_snapshot(state, options).await,
+        Request::Snapshot { options } => observe::cmd_snapshot(state, options).await,
         Request::Screenshot {
             full_page,
             selector,
@@ -86,7 +85,7 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
             quality,
             annotate,
         } => {
-            handlers::cmd_screenshot(
+            observe::cmd_screenshot(
                 state,
                 full_page,
                 selector.as_deref(),
@@ -103,7 +102,7 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
             click_count,
             delay,
             new_tab,
-        } => handlers::cmd_click(state, &target, button, click_count, delay, new_tab).await,
+        } => interact::cmd_click(state, &target, button, click_count, delay, new_tab).await,
         Request::DblClick { target } => page_ok!(state, &target, dblclick(&target)),
         Request::Fill { target, value } => page_ok!(state, &target, fill(&target, &value)),
         Request::Type {
@@ -111,7 +110,7 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
             text,
             delay_ms,
             clear,
-        } => handlers::cmd_type(state, target.as_deref(), &text, delay_ms, clear).await,
+        } => interact::cmd_type(state, target.as_deref(), &text, delay_ms, clear).await,
         Request::Press { key } => page_ok!(state, key_press(&key)),
         Request::Select { target, values } => {
             page_ok!(state, &target, select_options(&target, &values))
@@ -130,8 +129,8 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
         Request::SetValue { target, value } => {
             page_ok!(state, &target, set_value(&target, &value))
         }
-        Request::Frame { selector } => handlers::cmd_frame(state, &selector).await,
-        Request::MainFrame => handlers::cmd_main_frame(state).await,
+        Request::Frame { selector } => navigate::cmd_frame(state, &selector).await,
+        Request::MainFrame => navigate::cmd_main_frame(state).await,
         Request::KeyDown { key } => page_ok!(state, key_down(&key)),
         Request::KeyUp { key } => page_ok!(state, key_up(&key)),
         Request::InsertText { text } => page_ok!(state, insert_text(&text)),
@@ -141,7 +140,7 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
         Request::ScrollIntoView { target } => {
             page_ok!(state, &target, scroll_into_view(&target))
         }
-        Request::BoundingBox { target } => handlers::cmd_bounding_box(state, &target).await,
+        Request::BoundingBox { target } => observe::cmd_bounding_box(state, &target).await,
         Request::SetContent { html } => page_ok!(state, set_content(&html)),
         Request::Pdf { path, paper_format } => {
             let (pw, ph) = paper_format
@@ -155,29 +154,29 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
             status,
             body,
             content_type,
-        } => handlers::cmd_route(state, pattern, action, status, body, content_type).await,
+        } => network::cmd_route(state, pattern, action, status, body, content_type).await,
         Request::ScopedHeaders { origin, headers } => {
-            handlers::cmd_scoped_headers(state, origin, headers).await
+            network::cmd_scoped_headers(state, origin, headers).await
         }
         Request::ClearScopedHeaders { origin } => {
-            handlers::cmd_clear_scoped_headers(state, origin.as_deref()).await
+            network::cmd_clear_scoped_headers(state, origin.as_deref()).await
         }
-        Request::Unroute { pattern } => handlers::cmd_unroute(state, &pattern).await,
+        Request::Unroute { pattern } => network::cmd_unroute(state, &pattern).await,
         Request::Requests { action, filter } => {
-            handlers::cmd_requests(state, action.as_deref(), filter.as_deref()).await
+            network::cmd_requests(state, action.as_deref(), filter.as_deref()).await
         }
-        Request::SetDownloadPath { path } => handlers::cmd_set_download_path(state, &path).await,
-        Request::Downloads { action } => handlers::cmd_downloads(state, action.as_deref()).await,
+        Request::SetDownloadPath { path } => network::cmd_set_download_path(state, &path).await,
+        Request::Downloads { action } => network::cmd_downloads(state, action.as_deref()).await,
         Request::Download {
             target,
             path,
             timeout_ms,
-        } => handlers::cmd_download(state, &target, path.as_deref(), timeout_ms).await,
+        } => network::cmd_download(state, &target, path.as_deref(), timeout_ms).await,
         Request::WaitForDownload { path, timeout_ms } => {
-            handlers::cmd_wait_for_download(state, path.as_deref(), timeout_ms).await
+            network::cmd_wait_for_download(state, path.as_deref(), timeout_ms).await
         }
         Request::ResponseBody { url, timeout_ms } => {
-            handlers::cmd_response_body(state, &url, timeout_ms).await
+            network::cmd_response_body(state, &url, timeout_ms).await
         }
         Request::ClipboardRead => page_text!(state, clipboard_read()),
         Request::ClipboardWrite { text } => page_ok!(state, clipboard_write(&text)),
@@ -189,7 +188,7 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
             subaction,
             fill_value,
         } => {
-            handlers::cmd_find(
+            interact::cmd_find(
                 state,
                 &by,
                 &value,
@@ -206,7 +205,7 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
             subaction,
             fill_value,
         } => {
-            handlers::cmd_nth(
+            interact::cmd_nth(
                 state,
                 &selector,
                 index,
@@ -215,12 +214,10 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
             )
             .await
         }
-        Request::Expose { name } => handlers::cmd_expose(state, &name).await,
-        Request::DeviceList => handlers::cmd_device_list(),
-        Request::WindowNew { width, height } => {
-            handlers::cmd_window_new(state, width, height).await
-        }
-        Request::Device { name } => handlers::cmd_device(state, &name).await,
+        Request::Expose { name } => interact::cmd_expose(state, &name).await,
+        Request::DeviceList => emulate::cmd_device_list(),
+        Request::WindowNew { width, height } => tab::cmd_window_new(state, width, height).await,
+        Request::Device { name } => emulate::cmd_device(state, &name).await,
         Request::Viewport { width, height } => page_ok!(state, set_viewport(width, height)),
         Request::EmulateMedia {
             media,
@@ -240,7 +237,7 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
         }
         Request::Offline { offline } => page_ok!(state, set_offline(offline)),
         Request::ExtraHeaders { headers_json } => {
-            handlers::cmd_extra_headers(state, &headers_json).await
+            interact::cmd_extra_headers(state, &headers_json).await
         }
         Request::Geolocation {
             latitude,
@@ -309,8 +306,8 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
         Request::IsEnabled { target } => page_display!(state, &target, is_enabled(&target)),
         Request::IsChecked { target } => page_display!(state, &target, is_checked(&target)),
         Request::Count { selector } => page_display!(state, &selector, count(&selector)),
-        Request::Wait { condition } => handlers::cmd_wait(state, condition).await,
-        Request::DialogMessage => handlers::cmd_dialog_message(state).await,
+        Request::Wait { condition } => observe::cmd_wait(state, condition).await,
+        Request::DialogMessage => observe::cmd_dialog_message(state).await,
         Request::DialogAccept { prompt_text } => {
             page_ok!(state, dialog_accept(prompt_text.as_deref()))
         }
@@ -328,57 +325,57 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
             page_ok!(state, set_storage(&key, &value, session))
         }
         Request::ClearStorage { session } => page_ok!(state, clear_storage(session)),
-        Request::TabNew { url } => handlers::cmd_tab_new(state, url.as_deref()).await,
-        Request::TabList => handlers::cmd_tab_list(state).await,
-        Request::TabSelect { index } => handlers::cmd_tab_select(state, index).await,
-        Request::TabClose { index } => handlers::cmd_tab_close(state, index).await,
-        Request::Console { clear } => handlers::cmd_console(state, clear).await,
-        Request::Errors { clear } => handlers::cmd_errors(state, clear).await,
+        Request::TabNew { url } => tab::cmd_tab_new(state, url.as_deref()).await,
+        Request::TabList => tab::cmd_tab_list(state).await,
+        Request::TabSelect { index } => tab::cmd_tab_select(state, index).await,
+        Request::TabClose { index } => tab::cmd_tab_close(state, index).await,
+        Request::Console { clear } => observe::cmd_console(state, clear).await,
+        Request::Errors { clear } => observe::cmd_errors(state, clear).await,
         Request::DiffSnapshot { baseline, options } => {
-            handlers::cmd_diff_snapshot(state, &baseline, options).await
+            diff::cmd_diff_snapshot(state, &baseline, options).await
         }
         Request::DiffScreenshot {
             baseline,
             threshold,
             full_page,
-        } => handlers::cmd_diff_screenshot(state, &baseline, threshold, full_page).await,
+        } => diff::cmd_diff_screenshot(state, &baseline, threshold, full_page).await,
         Request::DiffUrl {
             url_a,
             url_b,
             screenshot,
             threshold,
             options,
-        } => handlers::cmd_diff_url(state, &url_a, &url_b, screenshot, threshold, options).await,
-        Request::StateSave { name } => handlers::cmd_state_save(state, &name).await,
-        Request::StateLoad { name } => handlers::cmd_state_load(state, &name).await,
-        Request::StateList => handlers::cmd_state_list().await,
-        Request::StateClear { name } => handlers::cmd_state_clear(&name).await,
-        Request::StateShow { name } => handlers::cmd_state_show(&name).await,
-        Request::StateClean { days } => handlers::cmd_state_clean(days).await,
+        } => diff::cmd_diff_url(state, &url_a, &url_b, screenshot, threshold, options).await,
+        Request::StateSave { name } => persist::cmd_state_save(state, &name).await,
+        Request::StateLoad { name } => persist::cmd_state_load(state, &name).await,
+        Request::StateList => persist::cmd_state_list().await,
+        Request::StateClear { name } => persist::cmd_state_clear(&name).await,
+        Request::StateShow { name } => persist::cmd_state_show(&name).await,
+        Request::StateClean { days } => persist::cmd_state_clean(days).await,
         Request::StateRename { old_name, new_name } => {
-            handlers::cmd_state_rename(&old_name, &new_name).await
+            persist::cmd_state_rename(&old_name, &new_name).await
         }
-        Request::TraceStart { categories } => handlers::cmd_trace_start(state, &categories).await,
-        Request::TraceStop { path } => handlers::cmd_trace_stop(state, path.as_deref()).await,
+        Request::TraceStart { categories } => debug::cmd_trace_start(state, &categories).await,
+        Request::TraceStop { path } => debug::cmd_trace_stop(state, path.as_deref()).await,
         Request::ProfilerStart { categories } => {
-            handlers::cmd_profiler_start(state, &categories).await
+            debug::cmd_profiler_start(state, &categories).await
         }
-        Request::ProfilerStop { path } => handlers::cmd_profiler_stop(state, path.as_deref()).await,
+        Request::ProfilerStop { path } => debug::cmd_profiler_stop(state, path.as_deref()).await,
         Request::ScreencastStart {
             format,
             quality,
             max_width,
             max_height,
-        } => handlers::cmd_screencast_start(state, format, quality, max_width, max_height).await,
-        Request::ScreencastStop => handlers::cmd_screencast_stop(state).await,
+        } => emulate::cmd_screencast_start(state, format, quality, max_width, max_height).await,
+        Request::ScreencastStop => emulate::cmd_screencast_stop(state).await,
         Request::RecordStart { path, quality } => {
-            handlers::cmd_record_start(state, path, quality).await
+            emulate::cmd_record_start(state, path, quality).await
         }
-        Request::RecordStop => handlers::cmd_record_stop(state).await,
-        Request::HarStart => handlers::cmd_har_start(state).await,
-        Request::HarStop { path } => handlers::cmd_har_stop(state, path.as_deref()).await,
+        Request::RecordStop => emulate::cmd_record_stop(state).await,
+        Request::HarStart => network::cmd_har_start(state).await,
+        Request::HarStop { path } => network::cmd_har_stop(state, path.as_deref()).await,
         Request::SetAllowedDomains { domains } => {
-            handlers::cmd_set_allowed_domains(state, domains).await
+            debug::cmd_set_allowed_domains(state, domains).await
         }
         Request::InputMouse {
             event_type,
@@ -434,7 +431,7 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
             username_selector,
             password_selector,
             submit_selector,
-        } => handlers::cmd_auth_save(
+        } => auth::cmd_auth_save(
             &name,
             &url,
             &username,
@@ -443,10 +440,10 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
             password_selector.as_deref(),
             submit_selector.as_deref(),
         ),
-        Request::AuthLogin { name } => handlers::cmd_auth_login(state, &name).await,
-        Request::AuthList => handlers::cmd_auth_list(),
-        Request::AuthDelete { name } => handlers::cmd_auth_delete(&name),
-        Request::AuthShow { name } => handlers::cmd_auth_show(&name),
+        Request::AuthLogin { name } => auth::cmd_auth_login(state, &name).await,
+        Request::AuthList => auth::cmd_auth_list(),
+        Request::AuthDelete { name } => auth::cmd_auth_delete(&name),
+        Request::AuthShow { name } => auth::cmd_auth_show(&name),
         Request::Pause => {
             tracing::info!("daemon paused — send any command to resume");
             Response::ok_data(ResponseData::Text {
@@ -456,7 +453,7 @@ async fn dispatch_no_policy(req: Request, state: &Arc<Mutex<DaemonState>>) -> Re
         Request::Confirm { .. } | Request::Deny { .. } => {
             Response::error("confirm/deny handled at dispatch level")
         }
-        Request::Status => handlers::cmd_status(state).await,
+        Request::Status => observe::cmd_status(state).await,
         Request::Close => Response::ok(),
     }
 }
@@ -510,7 +507,6 @@ async fn cmd_confirm(state: &Arc<Mutex<DaemonState>>, confirmation_id: &str) -> 
     let Ok(original_req) = serde_json::from_str::<Request>(&entry.request_json) else {
         return Response::error("stored command is no longer valid");
     };
-    // Re-check deny list in case policy was updated
     {
         let mut guard = state.lock().await;
         if let Some(cache) = guard.policy_cache.as_mut() {
@@ -525,7 +521,6 @@ async fn cmd_confirm(state: &Arc<Mutex<DaemonState>>, confirmation_id: &str) -> 
             }
         }
     }
-    // Bypass policy check and dispatch directly
     dispatch_no_policy(original_req, state).await
 }
 

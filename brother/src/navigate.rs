@@ -5,8 +5,7 @@ use std::time::Duration;
 use chromiumoxide::cdp::browser_protocol::page::NavigateToHistoryEntryParams;
 
 use crate::error::{Error, Result};
-
-use super::Page;
+use crate::page::Page;
 
 impl Page {
     /// Navigate to a URL and wait for the page to load.
@@ -143,5 +142,53 @@ impl Page {
     /// Wait for a fixed duration.
     pub async fn wait(&self, duration: Duration) {
         tokio::time::sleep(duration).await;
+    }
+
+    /// Poll a JS expression until truthy or timeout.
+    async fn poll_js(&self, expr: &str, timeout: Duration, desc: &str) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let wrapped = format!("!!({expr})");
+        loop {
+            let ok: bool = self
+                .inner
+                .evaluate(wrapped.clone())
+                .await
+                .map_err(Error::Cdp)?
+                .into_value()
+                .unwrap_or(false);
+            if ok {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(Error::Timeout(format!("{desc} within {timeout:?}")));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Get the navigation entry ID for a given offset from the current position.
+    async fn history_entry_id(&self, offset: i64) -> Result<Option<i64>> {
+        use chromiumoxide::cdp::browser_protocol::page::GetNavigationHistoryParams;
+        let r = self
+            .inner
+            .execute(GetNavigationHistoryParams::default())
+            .await
+            .map_err(Error::Cdp)?;
+        let current = r.result.current_index;
+        let target = current + offset;
+        if target < 0 {
+            return Ok(None);
+        }
+        let target_usize = target as usize;
+        r.result
+            .entries
+            .get(target_usize)
+            .map(|entry| Some(entry.id))
+            .ok_or_else(|| {
+                Error::Navigation(format!(
+                    "no history entry at offset {offset} (current={current}, total={})",
+                    r.result.entries.len()
+                ))
+            })
     }
 }

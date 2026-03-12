@@ -102,7 +102,6 @@ async fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
-    // Load config from file + env vars.
     let cfg = config::load();
     let session = if cli.session == "default" {
         cfg.session.clone().unwrap_or_else(|| "default".to_owned())
@@ -120,12 +119,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
 
     let mut client = DaemonClient::connect_session(&session).await?;
 
-    // Send Launch request if any launch options are configured.
     if let Some(req) = launch {
         let _ = client.send(&req).await?;
     }
 
-    // Auto-connect to running Chrome if --auto-connect flag is set.
     let auto_connect = cli.auto_connect || cfg.auto_connect.unwrap_or(false);
     if auto_connect && !matches!(cli.command, Command::AutoConnect | Command::Connect { .. }) {
         let _ = client.send(&protocol::Request::AutoConnect).await?;
@@ -145,8 +142,6 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Build a `Launch` request by merging config-file/env values with CLI flags.
-/// Returns `None` if everything is default (no configuration needed).
 fn build_launch(cli: &Cli, cfg: &config::Config) -> Option<protocol::Request> {
     let headed = cli.headed || cfg.headed.unwrap_or(false);
     let proxy = cli.proxy.clone().or_else(|| cfg.proxy.clone());
@@ -154,7 +149,6 @@ fn build_launch(cli: &Cli, cfg: &config::Config) -> Option<protocol::Request> {
         .executable_path
         .clone()
         .or_else(|| cfg.executable_path.clone());
-    // --profile <name> resolves to ~/.brother/profiles/<name>
     let profile_dir = cli
         .profile
         .clone()
@@ -175,7 +169,6 @@ fn build_launch(cli: &Cli, cfg: &config::Config) -> Option<protocol::Request> {
         .clone()
         .or_else(|| cfg.download_path.clone());
 
-    // Merge extra args: CLI flags + config file args (space-split).
     let mut extra_args = cli.extra_args.clone();
     if let Some(ref args_str) = cfg.args {
         for arg in args_str.split_whitespace() {
@@ -185,7 +178,6 @@ fn build_launch(cli: &Cli, cfg: &config::Config) -> Option<protocol::Request> {
         }
     }
 
-    // Skip Launch if everything is default.
     if !headed
         && proxy.is_none()
         && executable_path.is_none()
@@ -217,7 +209,6 @@ fn build_launch(cli: &Cli, cfg: &config::Config) -> Option<protocol::Request> {
     })
 }
 
-/// Resolve a named profile to its user data directory path.
 fn resolve_profile_dir(name: &str) -> String {
     let base = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))

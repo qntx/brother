@@ -1,0 +1,630 @@
+//! User interaction: click, fill, type, hover, scroll, keyboard, mouse, touch, clipboard.
+
+use std::time::Duration;
+
+use chromiumoxide::cdp::browser_protocol::input::{
+    DispatchKeyEventParams, DispatchKeyEventType, DispatchMouseEventParams, DispatchMouseEventType,
+    MouseButton as CdpMouseButton,
+};
+use serde::{Deserialize, Serialize};
+
+use crate::error::{Error, Result};
+use crate::page::Page;
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+/// Direction for scroll and swipe operations.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrollDirection {
+    /// Scroll down (positive Y).
+    Down,
+    /// Scroll up (negative Y).
+    Up,
+    /// Scroll right (positive X).
+    Right,
+    /// Scroll left (negative X).
+    Left,
+}
+
+/// Mouse button for click and mouse commands.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MouseButton {
+    /// Left mouse button (default).
+    #[default]
+    Left,
+    /// Right mouse button.
+    Right,
+    /// Middle mouse button.
+    Middle,
+}
+
+impl MouseButton {
+    pub(crate) const fn to_cdp(self) -> CdpMouseButton {
+        match self {
+            Self::Left => CdpMouseButton::Left,
+            Self::Right => CdpMouseButton::Right,
+            Self::Middle => CdpMouseButton::Middle,
+        }
+    }
+}
+
+/// CDP mouse event type for raw input injection.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum CdpMouseEventType {
+    /// Mouse button pressed.
+    #[serde(rename = "mousePressed")]
+    MousePressed,
+    /// Mouse button released.
+    #[serde(rename = "mouseReleased")]
+    MouseReleased,
+    /// Mouse moved.
+    #[serde(rename = "mouseMoved")]
+    MouseMoved,
+    /// Mouse wheel scrolled.
+    #[serde(rename = "mouseWheel")]
+    MouseWheel,
+}
+
+impl std::fmt::Display for CdpMouseEventType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::MousePressed => "mousePressed",
+            Self::MouseReleased => "mouseReleased",
+            Self::MouseMoved => "mouseMoved",
+            Self::MouseWheel => "mouseWheel",
+        })
+    }
+}
+
+impl std::str::FromStr for CdpMouseEventType {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "mousePressed" => Ok(Self::MousePressed),
+            "mouseReleased" => Ok(Self::MouseReleased),
+            "mouseMoved" => Ok(Self::MouseMoved),
+            "mouseWheel" => Ok(Self::MouseWheel),
+            other => Err(format!("unknown mouse event type '{other}'")),
+        }
+    }
+}
+
+/// CDP keyboard event type for raw input injection.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum CdpKeyEventType {
+    /// Key pressed down.
+    #[serde(rename = "keyDown")]
+    KeyDown,
+    /// Key released.
+    #[serde(rename = "keyUp")]
+    KeyUp,
+    /// Character typed.
+    #[serde(rename = "char")]
+    Char,
+}
+
+impl std::fmt::Display for CdpKeyEventType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::KeyDown => "keyDown",
+            Self::KeyUp => "keyUp",
+            Self::Char => "char",
+        })
+    }
+}
+
+impl std::str::FromStr for CdpKeyEventType {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "keyDown" => Ok(Self::KeyDown),
+            "keyUp" => Ok(Self::KeyUp),
+            "char" => Ok(Self::Char),
+            other => Err(format!("unknown key event type '{other}'")),
+        }
+    }
+}
+
+/// CDP touch event type for raw input injection.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum CdpTouchEventType {
+    /// Touch started.
+    #[serde(rename = "touchStart")]
+    TouchStart,
+    /// Touch ended.
+    #[serde(rename = "touchEnd")]
+    TouchEnd,
+    /// Touch moved.
+    #[serde(rename = "touchMove")]
+    TouchMove,
+    /// Touch cancelled.
+    #[serde(rename = "touchCancel")]
+    TouchCancel,
+}
+
+impl std::fmt::Display for CdpTouchEventType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::TouchStart => "touchStart",
+            Self::TouchEnd => "touchEnd",
+            Self::TouchMove => "touchMove",
+            Self::TouchCancel => "touchCancel",
+        })
+    }
+}
+
+impl std::str::FromStr for CdpTouchEventType {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "touchStart" => Ok(Self::TouchStart),
+            "touchEnd" => Ok(Self::TouchEnd),
+            "touchMove" => Ok(Self::TouchMove),
+            "touchCancel" => Ok(Self::TouchCancel),
+            other => Err(format!("unknown touch event type '{other}'")),
+        }
+    }
+}
+
+/// Raw CDP mouse event for injection.
+#[derive(Debug)]
+pub struct RawMouseEvent {
+    /// Event type.
+    pub event_type: CdpMouseEventType,
+    /// X coordinate.
+    pub x: f64,
+    /// Y coordinate.
+    pub y: f64,
+    /// Button: `"left"`, `"right"`, `"middle"`, `"none"`.
+    pub button: Option<String>,
+    /// Click count.
+    pub click_count: Option<i64>,
+    /// Wheel delta X.
+    pub delta_x: Option<f64>,
+    /// Wheel delta Y.
+    pub delta_y: Option<f64>,
+    /// Modifier flags (1=Alt, 2=Ctrl, 4=Meta, 8=Shift).
+    pub modifiers: Option<i64>,
+}
+
+// ---------------------------------------------------------------------------
+// CDP dispatch helpers (pub(crate), used by dom.rs drag too)
+// ---------------------------------------------------------------------------
+
+impl Page {
+    pub(crate) async fn dispatch_key(
+        &self,
+        kind: DispatchKeyEventType,
+        key: &str,
+    ) -> Result<()> {
+        self.inner
+            .execute(
+                DispatchKeyEventParams::builder()
+                    .r#type(kind)
+                    .key(key)
+                    .build()
+                    .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?,
+            )
+            .await
+            .map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    pub(crate) async fn dispatch_mouse(
+        &self,
+        kind: DispatchMouseEventType,
+        point: chromiumoxide::layout::Point,
+        click_count: i64,
+    ) -> Result<()> {
+        self.dispatch_mouse_with(kind, point, click_count, CdpMouseButton::Left)
+            .await
+    }
+
+    pub(crate) async fn dispatch_mouse_with(
+        &self,
+        kind: DispatchMouseEventType,
+        point: chromiumoxide::layout::Point,
+        click_count: i64,
+        button: CdpMouseButton,
+    ) -> Result<()> {
+        self.inner
+            .execute(
+                DispatchMouseEventParams::builder()
+                    .r#type(kind)
+                    .x(point.x)
+                    .y(point.y)
+                    .button(button)
+                    .click_count(click_count)
+                    .build()
+                    .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?,
+            )
+            .await
+            .map_err(Error::Cdp)?;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Interaction methods
+// ---------------------------------------------------------------------------
+
+impl Page {
+    /// Click an element by ref or CSS selector.
+    pub async fn click(&self, target: &str) -> Result<()> {
+        let center = self.resolve_target_center(target).await?;
+        self.inner.click(center).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Double-click an element.
+    pub async fn dblclick(&self, target: &str) -> Result<()> {
+        let center = self.resolve_target_center(target).await?;
+        self.dispatch_mouse(DispatchMouseEventType::MousePressed, center, 1).await?;
+        self.dispatch_mouse(DispatchMouseEventType::MouseReleased, center, 1).await?;
+        self.dispatch_mouse(DispatchMouseEventType::MousePressed, center, 2).await?;
+        self.dispatch_mouse(DispatchMouseEventType::MouseReleased, center, 2).await?;
+        Ok(())
+    }
+
+    /// Fill an input/textarea by programmatically setting its value.
+    pub async fn fill(&self, target: &str, value: &str) -> Result<()> {
+        let oid = self.resolve_target_object(target).await?;
+        let escaped = value.replace('\\', "\\\\").replace('\'', "\\'");
+        let js = format!(
+            "function() {{\
+                this.focus();\
+                if (this.tagName === 'SELECT') {{ this.value = '{escaped}'; }}\
+                else if (this.isContentEditable) {{ this.textContent = '{escaped}'; }}\
+                else {{ this.value = '{escaped}'; }}\
+                this.dispatchEvent(new Event('input', {{ bubbles: true }}));\
+                this.dispatchEvent(new Event('change', {{ bubbles: true }}));\
+            }}"
+        );
+        self.call_fn_on(oid, &js).await?;
+        Ok(())
+    }
+
+    /// Type text into an element (focuses first).
+    pub async fn type_into(&self, target: &str, text: &str) -> Result<()> {
+        self.focus(target).await?;
+        self.type_text(text).await
+    }
+
+    /// Focus an element.
+    pub async fn focus(&self, target: &str) -> Result<()> {
+        if let Some(r) = self.try_resolve_ref(target).await {
+            return self.focus_ref_element(&r).await;
+        }
+        let el = self.find_element(target).await?;
+        el.focus().await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Hover over an element.
+    pub async fn hover(&self, target: &str) -> Result<()> {
+        let center = self.resolve_target_center(target).await?;
+        self.inner.move_mouse(center).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Select a single option in a `<select>` element.
+    pub async fn select_option(&self, target: &str, value: &str) -> Result<()> {
+        let escaped_val = value.replace('\\', "\\\\").replace('\'', "\\'");
+        self.call_on_target(
+            target,
+            &format!(
+                "function() {{ for (const o of this.options) {{ \
+                   if (o.value === '{escaped_val}' || o.textContent.trim() === '{escaped_val}') \
+                     {{ o.selected = true; this.dispatchEvent(new Event('change')); return; }} }} }}"
+            ),
+        )
+        .await
+    }
+
+    /// Check a checkbox.
+    pub async fn check(&self, target: &str) -> Result<()> {
+        self.call_on_target(
+            target,
+            "function() { this.scrollIntoView({block:'center'}); if (!this.checked) this.click(); }",
+        )
+        .await
+    }
+
+    /// Uncheck a checkbox.
+    pub async fn uncheck(&self, target: &str) -> Result<()> {
+        self.call_on_target(
+            target,
+            "function() { this.scrollIntoView({block:'center'}); if (this.checked) this.click(); }",
+        )
+        .await
+    }
+
+    /// Scroll the page or a specific element.
+    pub async fn scroll(
+        &self,
+        direction: ScrollDirection,
+        pixels: i64,
+        selector: Option<&str>,
+    ) -> Result<()> {
+        let (dx, dy) = match direction {
+            ScrollDirection::Down => (0, pixels),
+            ScrollDirection::Up => (0, -pixels),
+            ScrollDirection::Right => (pixels, 0),
+            ScrollDirection::Left => (-pixels, 0),
+        };
+        if let Some(sel) = selector {
+            let escaped = sel.replace('\\', "\\\\").replace('\'', "\\'");
+            self.eval(&format!("document.querySelector('{escaped}')?.scrollBy({dx},{dy})")).await?;
+        } else {
+            self.eval(&format!("window.scrollBy({dx},{dy})")).await?;
+        }
+        Ok(())
+    }
+
+    /// Click with specific button, click count, and optional delay.
+    pub async fn click_with(
+        &self,
+        target: &str,
+        button: MouseButton,
+        click_count: u32,
+        delay_ms: u64,
+    ) -> Result<()> {
+        if button == MouseButton::Left && click_count == 1 && delay_ms == 0 {
+            return self.click(target).await;
+        }
+        self.scroll_into_view(target).await?;
+        let center = self.resolve_target_center(target).await?;
+        let cdp_btn = button.to_cdp();
+        let count = i64::from(click_count);
+        self.dispatch_mouse_with(DispatchMouseEventType::MousePressed, center, count, cdp_btn.clone()).await?;
+        if delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
+        self.dispatch_mouse_with(DispatchMouseEventType::MouseReleased, center, count, cdp_btn).await
+    }
+
+    /// Select multiple options on a `<select>` element.
+    pub async fn select_options(&self, target: &str, values: &[String]) -> Result<()> {
+        for v in values {
+            self.select_option(target, v).await?;
+        }
+        Ok(())
+    }
+
+    /// Type text with a per-character delay (0 = default 10 ms).
+    pub async fn type_with_delay(
+        &self,
+        target: Option<&str>,
+        text: &str,
+        delay_ms: u64,
+    ) -> Result<()> {
+        if let Some(t) = target {
+            self.focus(t).await?;
+        }
+        self.type_chars(text, if delay_ms == 0 { 10 } else { delay_ms }).await
+    }
+
+    /// Set an input value directly via JS (no key events fired).
+    pub async fn set_value(&self, target: &str, value: &str) -> Result<()> {
+        let oid = self.resolve_target_object(target).await?;
+        let escaped = value.replace('\\', "\\\\").replace('\'', "\\'");
+        self.call_fn_on(oid, &format!("function() {{ this.value = '{escaped}'; }}")).await?;
+        Ok(())
+    }
+
+    /// Press a key or combo (e.g. `"Enter"`, `"Tab"`, `"Control+a"`).
+    pub async fn key_press(&self, key: &str) -> Result<()> {
+        let parts: Vec<&str> = key.split('+').collect();
+        if parts.len() == 1 {
+            self.dispatch_key(DispatchKeyEventType::KeyDown, key).await?;
+            return self.dispatch_key(DispatchKeyEventType::KeyUp, key).await;
+        }
+        let (modifiers, final_key) = parts.split_at(parts.len() - 1);
+        for &m in modifiers {
+            self.dispatch_key(DispatchKeyEventType::KeyDown, m).await?;
+        }
+        self.dispatch_key(DispatchKeyEventType::KeyDown, final_key[0]).await?;
+        self.dispatch_key(DispatchKeyEventType::KeyUp, final_key[0]).await?;
+        for &m in modifiers.iter().rev() {
+            self.dispatch_key(DispatchKeyEventType::KeyUp, m).await?;
+        }
+        Ok(())
+    }
+
+    /// Type text character by character (10 ms inter-key delay).
+    pub async fn type_text(&self, text: &str) -> Result<()> {
+        self.type_chars(text, 10).await
+    }
+
+    async fn type_chars(&self, text: &str, delay_ms: u64) -> Result<()> {
+        let build_err = |e: String| Error::Cdp(chromiumoxide::error::CdpError::msg(e));
+        for ch in text.chars() {
+            let s = ch.to_string();
+            self.inner.execute(DispatchKeyEventParams::builder().r#type(DispatchKeyEventType::KeyDown).text(&s).key(&s).build().map_err(build_err)?).await.map_err(Error::Cdp)?;
+            self.inner.execute(DispatchKeyEventParams::builder().r#type(DispatchKeyEventType::Char).text(&s).build().map_err(build_err)?).await.map_err(Error::Cdp)?;
+            self.inner.execute(DispatchKeyEventParams::builder().r#type(DispatchKeyEventType::KeyUp).key(&s).build().map_err(build_err)?).await.map_err(Error::Cdp)?;
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
+        Ok(())
+    }
+
+    /// Press and hold a key.
+    pub async fn key_down(&self, key: &str) -> Result<()> {
+        self.dispatch_key(DispatchKeyEventType::KeyDown, key).await
+    }
+
+    /// Release a held key.
+    pub async fn key_up(&self, key: &str) -> Result<()> {
+        self.dispatch_key(DispatchKeyEventType::KeyUp, key).await
+    }
+
+    /// Insert text directly without firing individual key events.
+    pub async fn insert_text(&self, text: &str) -> Result<()> {
+        use chromiumoxide::cdp::browser_protocol::input::InsertTextParams;
+        self.inner.execute(InsertTextParams::new(text.to_owned())).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Move the mouse to absolute coordinates.
+    pub async fn mouse_move(&self, x: f64, y: f64) -> Result<()> {
+        self.inner.execute(
+            DispatchMouseEventParams::builder().r#type(DispatchMouseEventType::MouseMoved).x(x).y(y).build()
+                .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?,
+        ).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Press a mouse button down at the given coordinates.
+    pub async fn mouse_down(&self, button: MouseButton, x: f64, y: f64) -> Result<()> {
+        self.inner.execute(
+            DispatchMouseEventParams::builder().r#type(DispatchMouseEventType::MousePressed).button(button.to_cdp()).x(x).y(y).click_count(1).build()
+                .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?,
+        ).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Release a mouse button at the given coordinates.
+    pub async fn mouse_up(&self, button: MouseButton, x: f64, y: f64) -> Result<()> {
+        self.inner.execute(
+            DispatchMouseEventParams::builder().r#type(DispatchMouseEventType::MouseReleased).button(button.to_cdp()).x(x).y(y).click_count(1).build()
+                .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?,
+        ).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Scroll with the mouse wheel, optionally targeting an element.
+    pub async fn wheel(&self, delta_x: f64, delta_y: f64, selector: Option<&str>) -> Result<()> {
+        let (x, y) = if let Some(sel) = selector {
+            let center = self.resolve_target_center(sel).await?;
+            self.inner.move_mouse(center).await.map_err(Error::Cdp)?;
+            (center.x, center.y)
+        } else {
+            (0.0, 0.0)
+        };
+        self.inner.execute(
+            DispatchMouseEventParams::builder().r#type(DispatchMouseEventType::MouseWheel).x(x).y(y).delta_x(delta_x).delta_y(delta_y).build()
+                .map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?,
+        ).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Touch-tap an element.
+    pub async fn tap(&self, target: &str) -> Result<()> {
+        use chromiumoxide::cdp::browser_protocol::input::{DispatchTouchEventParams, DispatchTouchEventType, TouchPoint};
+        let center = self.resolve_target_center(target).await?;
+        let point = TouchPoint::new(center.x, center.y);
+        self.inner.execute(DispatchTouchEventParams::new(DispatchTouchEventType::TouchStart, vec![point.clone()])).await.map_err(Error::Cdp)?;
+        self.inner.execute(DispatchTouchEventParams::new(DispatchTouchEventType::TouchEnd, vec![])).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Inject a raw CDP mouse event.
+    pub async fn inject_mouse_event(&self, ev: RawMouseEvent) -> Result<()> {
+        let cdp_type = match ev.event_type {
+            CdpMouseEventType::MousePressed => DispatchMouseEventType::MousePressed,
+            CdpMouseEventType::MouseReleased => DispatchMouseEventType::MouseReleased,
+            CdpMouseEventType::MouseMoved => DispatchMouseEventType::MouseMoved,
+            CdpMouseEventType::MouseWheel => DispatchMouseEventType::MouseWheel,
+        };
+        let cdp_button = match ev.button.as_deref().unwrap_or("none") {
+            "left" => CdpMouseButton::Left,
+            "right" => CdpMouseButton::Right,
+            "middle" => CdpMouseButton::Middle,
+            _ => CdpMouseButton::None,
+        };
+        let mut builder = DispatchMouseEventParams::builder().r#type(cdp_type).x(ev.x).y(ev.y).button(cdp_button);
+        if let Some(cc) = ev.click_count { builder = builder.click_count(cc); }
+        if let Some(dx) = ev.delta_x { builder = builder.delta_x(dx); }
+        if let Some(dy) = ev.delta_y { builder = builder.delta_y(dy); }
+        if let Some(m) = ev.modifiers { builder = builder.modifiers(m); }
+        self.inner.execute(builder.build().map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Inject a raw CDP keyboard event.
+    pub async fn inject_key_event(
+        &self, event_type: CdpKeyEventType, key: Option<&str>, code: Option<&str>,
+        text: Option<&str>, modifiers: Option<i64>,
+    ) -> Result<()> {
+        let cdp_type = match event_type {
+            CdpKeyEventType::KeyDown => DispatchKeyEventType::KeyDown,
+            CdpKeyEventType::KeyUp => DispatchKeyEventType::KeyUp,
+            CdpKeyEventType::Char => DispatchKeyEventType::Char,
+        };
+        let mut builder = DispatchKeyEventParams::builder().r#type(cdp_type);
+        if let Some(k) = key { builder = builder.key(k); }
+        if let Some(c) = code { builder = builder.code(c); }
+        if let Some(t) = text { builder = builder.text(t); }
+        if let Some(m) = modifiers { builder = builder.modifiers(m); }
+        self.inner.execute(builder.build().map_err(|e| Error::Cdp(chromiumoxide::error::CdpError::msg(e)))?).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Inject a raw CDP touch event.
+    pub async fn inject_touch_event(
+        &self, event_type: CdpTouchEventType, touch_points: &[(f64, f64)], modifiers: Option<i64>,
+    ) -> Result<()> {
+        use chromiumoxide::cdp::browser_protocol::input::{DispatchTouchEventParams, DispatchTouchEventType, TouchPoint};
+        let cdp_type = match event_type {
+            CdpTouchEventType::TouchStart => DispatchTouchEventType::TouchStart,
+            CdpTouchEventType::TouchEnd => DispatchTouchEventType::TouchEnd,
+            CdpTouchEventType::TouchMove => DispatchTouchEventType::TouchMove,
+            CdpTouchEventType::TouchCancel => DispatchTouchEventType::TouchCancel,
+        };
+        let points: Vec<TouchPoint> = touch_points.iter().map(|&(x, y)| TouchPoint::new(x, y)).collect();
+        let mut params = DispatchTouchEventParams::new(cdp_type, points);
+        if let Some(m) = modifiers { params.modifiers = Some(m); }
+        self.inner.execute(params).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Perform a swipe gesture on an element.
+    pub async fn swipe(&self, target: &str, direction: ScrollDirection, distance: i64) -> Result<()> {
+        use chromiumoxide::cdp::browser_protocol::input::{DispatchTouchEventParams, DispatchTouchEventType, TouchPoint};
+        let center = self.resolve_target_center(target).await?;
+        let (cx, cy) = (center.x, center.y);
+        let (dx, dy): (f64, f64) = match direction {
+            ScrollDirection::Up => (0.0, -(distance as f64)),
+            ScrollDirection::Down => (0.0, distance as f64),
+            ScrollDirection::Left => (-(distance as f64), 0.0),
+            ScrollDirection::Right => (distance as f64, 0.0),
+        };
+        let steps = 10u32;
+        let step_delay = Duration::from_millis(16);
+        self.inner.execute(DispatchTouchEventParams::new(DispatchTouchEventType::TouchStart, vec![TouchPoint::new(cx, cy)])).await.map_err(Error::Cdp)?;
+        for i in 1..=steps {
+            let frac = f64::from(i) / f64::from(steps);
+            self.inner.execute(DispatchTouchEventParams::new(DispatchTouchEventType::TouchMove, vec![TouchPoint::new(dx.mul_add(frac, cx), dy.mul_add(frac, cy))])).await.map_err(Error::Cdp)?;
+            tokio::time::sleep(step_delay).await;
+        }
+        self.inner.execute(DispatchTouchEventParams::new(DispatchTouchEventType::TouchEnd, vec![])).await.map_err(Error::Cdp)?;
+        Ok(())
+    }
+
+    /// Read text from the clipboard (grants permission first).
+    pub async fn clipboard_read(&self) -> Result<String> {
+        self.grant_clipboard_permission().await?;
+        let val = self.eval("navigator.clipboard.readText()").await?;
+        Ok(val.as_str().unwrap_or("").to_owned())
+    }
+
+    /// Write text to the clipboard (grants permission first).
+    pub async fn clipboard_write(&self, text: &str) -> Result<()> {
+        self.grant_clipboard_permission().await?;
+        let escaped = text.replace('\\', "\\\\").replace('\'', "\\'");
+        self.eval(&format!("navigator.clipboard.writeText('{escaped}')")).await?;
+        Ok(())
+    }
+
+    async fn grant_clipboard_permission(&self) -> Result<()> {
+        use chromiumoxide::cdp::browser_protocol::browser::{PermissionDescriptor, PermissionSetting, SetPermissionParams};
+        for perm_name in ["clipboard-read", "clipboard-write"] {
+            self.inner.execute(SetPermissionParams::new(PermissionDescriptor::new(perm_name.to_owned()), PermissionSetting::Granted)).await.map_err(Error::Cdp)?;
+        }
+        Ok(())
+    }
+}

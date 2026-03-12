@@ -5,11 +5,20 @@
 //! [`Response`](crate::protocol::Response) messages. The browser is lazily
 //! launched on first command.
 
+mod auth;
+mod debug;
+mod diff;
 mod dispatch;
-mod handlers;
+mod emulate;
+mod interact;
 #[macro_use]
 pub mod macros;
+mod navigate;
+mod network;
+mod observe;
+mod persist;
 mod server;
 pub mod state;
+mod tab;
 
 pub use server::run_session;
